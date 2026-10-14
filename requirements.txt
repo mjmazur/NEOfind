@@ -2,5 +2,6 @@ numpy>=1.24
 scipy>=1.10
 astropy>=6.0
 Pillow>=10.0
+numba>=0.58      # optional but recommended: fast shift-and-stack; numpy fallback is far slower
 matplotlib>=3.7  # optional: detector plots
 pytest>=7        # optional: tests

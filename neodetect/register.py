@@ -1,0 +1,193 @@
+"""Resample every frame onto one common pixel grid.
+
+The grid is a TAN projection with the reference frame's pixel scale and
+orientation (so most frames need little rotation), centered on and sized to
+the union of all frame footprints, optionally limited to a region. Frames
+cover only part of it (WISE frames drift ~4' per orbit), so every pixel
+carries a per-frame validity flag.
+
+Per frame, in native pixels: subtract a smooth sky, mask sharp outliers
+(cosmic rays, hot pixels), fill masked pixels with a local median so the
+spline prefilter doesn't ring; then resample the image with a cubic spline,
+the variance bilinearly, and mark every grid pixel whose interpolation
+stencil touched a masked or off-frame pixel. Images are scaled to the
+reference frame's photometric zero point so a source has the same flux
+everywhere.
+
+Interpolation smooths the noise (lower per-pixel variance, correlated
+neighbors); ``preprocess`` calibrates matched-filter significance
+empirically, which absorbs this.
+"""
+
+import math
+from dataclasses import dataclass
+from typing import List, Optional
+
+import numpy as np
+from astropy.wcs import WCS
+from scipy import ndimage
+from scipy.ndimage import map_coordinates
+
+from .cosmics import estimate_sky, sharp_outliers
+from .io import Frame, Sequence, default_psf_fwhm_arcsec, robust_sigma
+from .psf import FWHM_TO_SIGMA
+
+
+@dataclass
+class Registered:
+    wcs: WCS  # common grid
+    data: np.ndarray  # (n, h, w) float32, sky-subtracted, reference-ZP DN; 0 where invalid
+    var: np.ndarray  # (n, h, w) float32 variance (resampled, not yet noise-calibrated)
+    valid: np.ndarray  # (n, h, w) bool
+    times: np.ndarray  # mid-exposure MJD per frame
+    psf_sigma_px: np.ndarray  # per frame, in grid pixels
+    flux_scale: np.ndarray  # multiplier applied to each frame (zero-point matching)
+    magzp: Optional[float]  # zero point of the grid's flux units
+    n_outlier_px: List[int]
+    frame_wcs: List[WCS]
+    frame_shapes: List[tuple]
+
+    @property
+    def shape(self):
+        return self.data.shape[1:]
+
+    @property
+    def n(self):
+        return self.data.shape[0]
+
+    @property
+    def pixel_scale_arcsec(self) -> float:
+        return float(np.sqrt(abs(np.linalg.det(self.wcs.pixel_scale_matrix))) * 3600.0)
+
+
+def _footprint_world(f: Frame, n_side: int = 8):
+    h, w = f.shape
+    xs = np.linspace(-0.5, w - 0.5, n_side)
+    ys = np.linspace(-0.5, h - 0.5, n_side)
+    edge_x = np.concatenate([xs, np.full(n_side, w - 0.5), xs[::-1], np.full(n_side, -0.5)])
+    edge_y = np.concatenate([np.full(n_side, -0.5), ys, np.full(n_side, h - 0.5), ys[::-1]])
+    return f.wcs.all_pix2world(edge_x, edge_y, 0)
+
+
+def _unit(ra, dec):
+    ra, dec = np.radians(ra), np.radians(dec)
+    return np.stack([np.cos(dec) * np.cos(ra), np.cos(dec) * np.sin(ra), np.sin(dec)], -1)
+
+
+def build_grid(frames: List[Frame], ref: int, region=None, margin_px: int = 4,
+               max_pixels: int = 25_000_000) -> WCS:
+    """Common grid WCS. ``region`` = (ra_deg, dec_deg, size_deg) limits it to a square."""
+    rf = frames[ref]
+    if region is not None:
+        ra_c, dec_c = region[0], region[1]
+    else:
+        centers = np.array([f.wcs.all_pix2world([(f.shape[1] - 1) / 2], [(f.shape[0] - 1) / 2], 0)
+                            for f in frames])[:, :, 0]
+        v = _unit(centers[:, 0], centers[:, 1]).mean(axis=0)
+        ra_c = math.degrees(math.atan2(v[1], v[0])) % 360.0
+        dec_c = math.degrees(math.asin(v[2] / np.linalg.norm(v)))
+
+    g = WCS(naxis=2)
+    g.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    g.wcs.crval = [ra_c, dec_c]
+    g.wcs.cd = rf.wcs.pixel_scale_matrix
+    g.wcs.crpix = [0.0, 0.0]
+    g.wcs.radesys = "ICRS"
+
+    if region is not None:
+        half = 0.5 * region[2] * 3600.0 / rf.pixel_scale_arcsec
+        lo_x = lo_y = -half
+        hi_x = hi_y = half
+    else:
+        xs, ys = [], []
+        for f in frames:
+            ra, dec = _footprint_world(f)
+            x, y = g.all_world2pix(ra, dec, 0)
+            xs.append(x)
+            ys.append(y)
+        xs, ys = np.concatenate(xs), np.concatenate(ys)
+        lo_x, hi_x, lo_y, hi_y = xs.min(), xs.max(), ys.min(), ys.max()
+    w = int(math.ceil(hi_x - lo_x)) + 2 * margin_px
+    h = int(math.ceil(hi_y - lo_y)) + 2 * margin_px
+    if w * h > max_pixels:
+        raise ValueError(f"common grid would be {w}x{h} px; restrict it with a region")
+    # Shift so grid pixel (0, 0) sits at the lower-left corner of the bounds.
+    g.wcs.crpix = [1.0 - (lo_x - margin_px), 1.0 - (lo_y - margin_px)]
+    g.pixel_shape = (w, h)
+    return g
+
+
+def _prepare_native(f: Frame, psf_sigma_native: float, outlier_nsig: float):
+    """Sky-subtracted image, 1-sigma map, and bad mask including sharp outliers."""
+    sky = estimate_sky(f.data, f.bad)
+    resid = f.data - sky
+    if f.unc is not None:
+        sig = f.unc.astype(np.float32)
+    else:
+        sig = np.full(f.shape, robust_sigma(resid[~f.bad][::7]), dtype=np.float32)
+    bad = f.bad.copy()
+    hits = sharp_outliers(resid, np.where(bad, np.inf, sig), bad, psf_sigma_native,
+                          nsig=outlier_nsig)
+    n_hits = int(hits.sum())
+    bad |= hits
+    return resid, sig, bad, n_hits
+
+
+def register(seq: Sequence, ref: Optional[int] = None, region=None,
+             outlier_nsig: float = 4.0, log=None) -> Registered:
+    log = log or (lambda *a: None)
+    frames = seq.frames
+    n = len(frames)
+    ref = n // 2 if ref is None else ref
+    grid = build_grid(frames, ref, region)
+    gw, gh = grid.pixel_shape
+    yy, xx = np.mgrid[0:gh, 0:gw]
+    g_ra, g_dec = grid.all_pix2world(xx.ravel(), yy.ravel(), 0)
+    del xx, yy
+    grid_scale = float(np.sqrt(abs(np.linalg.det(grid.pixel_scale_matrix))) * 3600.0)
+
+    zp_ref = frames[ref].magzp
+    data = np.zeros((n, gh, gw), np.float32)
+    var = np.zeros((n, gh, gw), np.float32)
+    valid = np.zeros((n, gh, gw), bool)
+    psf_sigma = np.zeros(n)
+    scale = np.ones(n)
+    n_out = []
+    for k, f in enumerate(frames):
+        fwhm = default_psf_fwhm_arcsec(f)
+        sig_native = fwhm * FWHM_TO_SIGMA / f.pixel_scale_arcsec
+        psf_sigma[k] = fwhm * FWHM_TO_SIGMA / grid_scale
+        if zp_ref is not None and f.magzp is not None:
+            scale[k] = 10 ** (0.4 * (zp_ref - f.magzp))
+
+        resid, sig, bad, n_hits = _prepare_native(f, sig_native, outlier_nsig)
+        n_out.append(n_hits)
+        filled = np.where(bad, ndimage.median_filter(np.where(bad, 0.0, resid), size=5), resid)
+
+        fx, fy = f.wcs.all_world2pix(g_ra, g_dec, 0)
+        fh, fw = f.shape
+        inside = (fx > 1.0) & (fx < fw - 2.0) & (fy > 1.0) & (fy < fh - 2.0)
+        coords = np.array([fy[inside], fx[inside]])
+        img = map_coordinates(filled.astype(np.float64), coords, order=3, mode="nearest")
+        v = map_coordinates((sig.astype(np.float64)) ** 2, coords, order=1, mode="nearest")
+        # Any masked pixel within the cubic stencil (+-2 px) invalidates the sample.
+        bad_grown = ndimage.binary_dilation(bad, structure=np.ones((3, 3), bool)).astype(np.float32)
+        b = map_coordinates(bad_grown, coords, order=1, mode="nearest") > 0
+
+        ok = np.zeros(gh * gw, bool)
+        ok[np.flatnonzero(inside)[~b]] = True
+        dk = np.zeros(gh * gw, np.float32)
+        vk = np.zeros(gh * gw, np.float32)
+        dk[inside] = img * scale[k]
+        vk[inside] = v * scale[k] ** 2
+        dk[~ok] = 0.0
+        vk[~ok] = 0.0
+        data[k] = dk.reshape(gh, gw)
+        var[k] = vk.reshape(gh, gw)
+        valid[k] = ok.reshape(gh, gw)
+        log(f"  frame {k}: {ok.mean():.0%} of grid covered, {n_hits} outlier px masked")
+
+    return Registered(wcs=grid, data=data, var=var, valid=valid, times=seq.times,
+                      psf_sigma_px=psf_sigma, flux_scale=scale, magzp=zp_ref,
+                      n_outlier_px=n_out, frame_wcs=[f.wcs for f in frames],
+                      frame_shapes=[f.shape for f in frames])

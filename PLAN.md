@@ -102,6 +102,28 @@ sweep.py, tests/
 - Real-data truth: (a) known asteroids from SkyBoT/sb_ident and MOST, (b)
   injection-recovery of synthetic asteroids in real frames.
 
+## Status and lessons
+
+- **M1 done** (simulator). **M2 done** (detector on WISE-like simulations).
+- Search losses are negligible: refined detection scores equal the
+  statistic at the true track, which tracks the ideal SNR.
+- False alarms are dominated by chance alignments of 3-4 single-frame
+  artifacts (cosmic rays whose footprint is genuinely PSF-like: corner hits,
+  ~2 px diagonal tracks, hits on stars). Hence: three-test CR masking in
+  native pixels, per-frame clipping in the stack, flux-consistency vetting,
+  and detection thresholds that depend on how many frames a track uses.
+- CPU cost: shift-and-stack up to 0.25 deg/day on a full WISE visit
+  (12 frames, ~2000x1700 grid, 44k velocities) takes ~40 s on 32 cores
+  (cache-blocked numba kernel, ~30 G adds/s, memory-bandwidth bound).
+  Each doubling of the rate range is 4x the work, which is where a GPU
+  backend pays off.
+- Open items for M3+: second-pass artifact masking on star-subtracted
+  residuals back-projected to native pixels (cosmic rays on bright-star
+  wings escape the flat-background sharpness tests; vetting currently
+  catches them); real WISE PSF (wings) in both simulator and detector;
+  ground-preset PSF matching between frames; trailed templates for fast
+  movers in long exposures.
+
 ## Milestones
 
 1. **Simulator.** WISE (default) and ground presets, WISE-style FITS output
