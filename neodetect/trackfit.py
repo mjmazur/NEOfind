@@ -1,8 +1,12 @@
 """Coherent multi-frame matched filter for a moving point source.
 
 A track is a position ``(x0, y0)`` on the common grid at reference time
-``t_ref`` (MJD) plus a velocity ``(vx, vy)`` in grid px/day. In frame k
-(mid-exposure time t_k) the source sits at ``p_k = p0 + v (t_k - t_ref)``.
+``t_ref`` (MJD) plus a velocity ``(vx, vy)`` in grid px/day and an
+acceleration ``(ax, ay)`` in px/day^2. In frame k (mid-exposure time t_k)
+the source sits at ``p_k = p0 + v dt + a dt^2 / 2``, ``dt = t_k - t_ref``.
+Seeds are straight; ``refine`` can fit the acceleration: seen from Earth
+(or WISE), a main-belt asteroid's path curves by ~15"/day^2, up to ~1 WISE
+pixel off a straight line over a ~1.4-day visit, and an NEO's by more.
 Per frame, with the frame's PSF stamp P placed exactly at p_k,
 
     num_k = <w_k r_k, P>      den_k = <w_k, P^2>
@@ -46,6 +50,7 @@ from .preprocess import Preprocessed
 from .psf import clip_stamp, stamp
 
 MIN_PSF_COVERAGE = 0.6
+SOLID_COVERAGE = 0.9  # frames that constrain a final track's geometry (``refit_geometry``)
 
 
 @dataclass
@@ -55,20 +60,29 @@ class Track:
     vx: float  # grid px / day
     vy: float
     t_ref: float  # MJD
+    ax: float = 0.0  # grid px / day^2
+    ay: float = 0.0
 
     def position(self, t):
         dt = np.asarray(t, dtype=float) - self.t_ref
-        return self.x0 + self.vx * dt, self.y0 + self.vy * dt
+        return (self.x0 + self.vx * dt + 0.5 * self.ax * dt * dt,
+                self.y0 + self.vy * dt + 0.5 * self.ay * dt * dt)
+
+    def velocity(self, t):
+        dt = np.asarray(t, dtype=float) - self.t_ref
+        return self.vx + self.ax * dt, self.vy + self.ay * dt
 
     @property
     def speed(self) -> float:
         return math.hypot(self.vx, self.vy)
 
     def params(self):
-        return np.array([self.x0, self.y0, self.vx, self.vy])
+        return np.array([self.x0, self.y0, self.vx, self.vy, self.ax, self.ay])
 
     def with_params(self, p) -> "Track":
-        return Track(float(p[0]), float(p[1]), float(p[2]), float(p[3]), self.t_ref)
+        """Track from 4 (straight) or 6 parameters."""
+        a = (float(p[4]), float(p[5])) if len(p) > 4 else (0.0, 0.0)
+        return Track(float(p[0]), float(p[1]), float(p[2]), float(p[3]), self.t_ref, *a)
 
 
 @dataclass
@@ -167,6 +181,58 @@ class TrackEvaluator:
             den[k] = float((w * t2).sum())
         return num, den
 
+    def frame_coverage(self, track: Track) -> np.ndarray:
+        """Per frame, the fraction of the PSF's squared weight on valid pixels
+        at the track position (0 off the grid)."""
+        cov = np.zeros(self.n)
+        xs, ys = track.position(self.times)
+        for k in range(self.n):
+            st, r0, c0 = stamp(xs[k], ys[k], self.pre.psf_sigma_px[k])
+            clipped = clip_stamp(st, r0, c0, self.shape)
+            if clipped is None:
+                continue
+            t, (a, b, c, d) = clipped
+            cov[k] = float((t * t * (self.pre.weight[k, a:b, c:d] > 0)).sum()) / float((st * st).sum())
+        return cov
+
+    def refit_geometry(self, best: "TrackScore", accel_max: float = 0.0) -> "TrackScore":
+        """Re-fit a refined track's path on its fully covered frames only.
+
+        A frame whose PSF footprint is partly masked counts only while the
+        track keeps >= ``MIN_PSF_COVERAGE`` of it valid, so maximizing S can
+        bend the path toward valid pixels to keep such a frame: on (120)
+        Lachesis, whose core is masked in several frames, that bent the
+        fitted curvature by 9"/day^2 and the positions by up to 0.8". Here
+        the path is fitted to the used frames with >= ``SOLID_COVERAGE``
+        (enough of them for the parameters), then the score is recomputed
+        on all frames for that path."""
+        cov = self.frame_coverage(best.track)
+        solid = best.used & (cov >= SOLID_COVERAGE)
+        fit_a = accel_max > 0
+        if solid.sum() == best.used.sum() or solid.sum() < (4 if fit_a else self.min_frames):
+            return best
+        tau = max(float(np.max(np.abs(self.times - best.track.t_ref))), 1e-3)
+        accel_max = max(accel_max, abs(best.track.ax), abs(best.track.ay))
+        npar = 6 if fit_a else 4
+        scale = np.array([0.5, 0.5, 0.5 / tau, 0.5 / tau, 1.0 / tau ** 2, 1.0 / tau ** 2])[:npar]
+        p0 = best.track.params()[:npar]
+
+        def params(u):
+            p = p0 + u * scale
+            if fit_a:
+                p[4:] = np.clip(p[4:], -accel_max, accel_max)
+            return p
+
+        def neg(u):
+            sc = self.score(best.track.with_params(params(u)), used=solid)
+            return -sc.score if sc is not None else 1e3
+
+        res = minimize(neg, np.zeros(npar), method="Nelder-Mead",
+                       options={"xatol": 0.02, "fatol": 1e-3, "maxfev": 150 * npar,
+                                "initial_simplex": np.vstack([np.zeros(npar), np.eye(npar)])})
+        out = self.score(best.track.with_params(params(res.x)))
+        return out if out is not None else best
+
     def score(self, track: Track, used=None) -> Optional[TrackScore]:
         num, den = self.frame_sums(track)
         covered = den > 0
@@ -183,40 +249,53 @@ class TrackEvaluator:
         return TrackScore(track=track, score=s, score_all=float(num[covered].sum() / math.sqrt(d_all)),
                           used=used, covered=covered, num=num, den=den)
 
-    def refine(self, track: Track, rounds: int = 3) -> Optional[TrackScore]:
-        """Maximize S over (x0, y0, vx, vy), re-selecting frames between rounds."""
+    def refine(self, track: Track, rounds: int = 3, accel_max: float = 0.0) -> Optional[TrackScore]:
+        """Maximize S over (x0, y0, vx, vy) -- and (ax, ay), bounded by
+        ``accel_max`` px/day^2 per axis (or the seed's own, if larger), when
+        that is > 0 -- re-selecting frames between rounds."""
         best = self.score(track)
         if best is None:
             return None
         tau = max(float(np.max(np.abs(self.times - track.t_ref))), 1e-3)
-        scale = np.array([0.5, 0.5, 0.5 / tau, 0.5 / tau])
+        fit_a = accel_max > 0
+        accel_max = max(accel_max, abs(track.ax), abs(track.ay))
+        npar = 6 if fit_a else 4
+        # Steps that move the end frames by ~0.5 px.
+        scale = np.array([0.5, 0.5, 0.5 / tau, 0.5 / tau, 1.0 / tau ** 2, 1.0 / tau ** 2])[:npar]
         for _ in range(rounds):
             used = best.used
-            p0 = best.track.params()
+            p0 = best.track.params()[:npar]
+
+            def params(u):
+                p = p0 + u * scale
+                if fit_a:
+                    p[4:] = np.clip(p[4:], -accel_max, accel_max)
+                return p
 
             def neg(u):
-                sc = self.score(track.with_params(p0 + u * scale), used=used)
+                sc = self.score(track.with_params(params(u)), used=used)
                 return -sc.score if sc is not None else 1e3
 
-            res = minimize(neg, np.zeros(4), method="Nelder-Mead",
-                           options={"xatol": 0.02, "fatol": 1e-3, "maxfev": 400,
-                                    "initial_simplex": np.vstack([np.zeros(4), np.eye(4)])})
-            cand = self.score(track.with_params(p0 + res.x * scale))
+            res = minimize(neg, np.zeros(npar), method="Nelder-Mead",
+                           options={"xatol": 0.02, "fatol": 1e-3, "maxfev": 100 * npar,
+                                    "initial_simplex": np.vstack([np.zeros(npar), np.eye(npar)])})
+            cand = self.score(track.with_params(params(res.x)))
             if cand is None or cand.score <= best.score + 1e-3:
                 break
             best = cand
         return best
 
-    def bilinear_sums(self, x0, y0, vx, vy, t_ref):
+    def bilinear_sums(self, x0, y0, vx, vy, t_ref, ax=0.0, ay=0.0):
         """Approximate (num, den), shape (m, n), for m hypotheses from psi/phi."""
         x0, y0, vx, vy = (np.atleast_1d(np.asarray(a, dtype=float)) for a in (x0, y0, vx, vy))
+        ax, ay = (np.broadcast_to(np.asarray(a, dtype=float), x0.shape) for a in (ax, ay))
         m = x0.size
         num = np.zeros((m, self.n))
         den = np.zeros((m, self.n))
         h, w = self.shape
         for k in range(self.n):
             dt = self.times[k] - t_ref
-            x, y = x0 + vx * dt, y0 + vy * dt
+            x, y = x0 + vx * dt + 0.5 * ax * dt * dt, y0 + vy * dt + 0.5 * ay * dt * dt
             inside = (x >= 0) & (x <= w - 1) & (y >= 0) & (y <= h - 1)
             if not inside.any():
                 continue

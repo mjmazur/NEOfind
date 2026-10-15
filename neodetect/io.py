@@ -138,10 +138,38 @@ def observation_mjd(h: fits.Header) -> float:
 def default_bad_bits(h: fits.Header) -> int:
     """Mask bits that mark unusable pixels: WISE's definitions for WISE
     frames (see ``neowise.maskbits``), otherwise any set bit."""
-    if str(h.get("TELESCOP", "")).strip().upper() == "WISE" and not h.get("SIMULATD"):
+    if _is_real_wise(h):
         from neowise.maskbits import BAD_BITS
         return BAD_BITS
     return -1
+
+
+def _is_real_wise(h: fits.Header) -> bool:
+    return str(h.get("TELESCOP", "")).strip().upper() == "WISE" and not h.get("SIMULATD")
+
+
+def default_null_scrambles(frame: "Frame") -> int:
+    """Time-scrambled copies ``neodetect detect`` runs to set per-visit
+    thresholds (``nullcal``): 2 for real WISE frames, whose false-alarm
+    tails vary widely between visits (the median of two copies halves the
+    scatter of one), else 0 (the fixed thresholds)."""
+    return 2 if _is_real_wise(frame.header) else 0
+
+
+def default_aperture_ee(frame: "Frame") -> float:
+    """Fraction of a point source's total flux within the photometry
+    aperture (``photometry.aperture_radius``, ~3.6 FWHM). Real WISE W1/W2:
+    0.959 within 8 px, from the official single-exposure PSF (Explanatory
+    Supplement IV.4.c). Elsewhere (simulations, unknown instruments): 1."""
+    return 0.959 if _is_real_wise(frame.header) else 1.0
+
+
+def default_aperture_correction(frame: "Frame") -> float:
+    """Gaussian-fit to total flux ratio used when a sequence has too few
+    isolated stars to measure it. Real WISE W1: 1.15, the median over 15
+    NEOWISE visits (1.145-1.21). Elsewhere: 1 (the Gaussian model is exact
+    for simulations; unknown otherwise)."""
+    return 1.15 if _is_real_wise(frame.header) else 1.0
 
 
 def load_frame(path, bad_bits: Optional[int] = None) -> Frame:

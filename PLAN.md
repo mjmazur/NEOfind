@@ -132,18 +132,87 @@ sweep.py, tests/
   README: same 50% point (W1 ≈ 15.4) as on simulations, with ~1.7x
   higher thresholds offset by ~1.8x deeper real frames. Known bright
   asteroids are recovered at 0.1-0.2 px.
-- Real-data limits found in M3, to address in M4:
+- **M4 in progress** (robustness and reporting). Done so far, details in
+  the README:
+  - Aperture correction from each visit's stars (`photometry.py`): magnitude
+    bias +0.14 → −0.01 mag on injected asteroids, rms 0.15 → 0.04.
+    Against the NEOWISE source catalog (IRSA `neowiser_p1bs_psd`), Oceana's
+    per-frame magnitudes are still ~0.08 mag faint. The likely cause is
+    track position error, which acceleration fitting should reduce;
+    recheck.
+  - Curved paths. SkyBoT ephemerides show apparent paths bending ~15"/day²
+    for main-belt asteroids (|a|/rate 40–120 "/day² per deg/day), straying
+    up to 3.3" (median 2.2") from a straight line over a 1.4-day visit; a
+    quadratic fits to 0.02". Cause: the observer's solar acceleration
+    divided by the distance. Straight tracks lose a median 3% of the score
+    (up to 45% for fast curved movers). Hence the bounded acceleration
+    in track fit and linking, and two-body orbit injections
+    (`neosim/orbit.py`, validated against SkyBoT to ~0.1"). The `neosim`
+    simulator's own `motion.py` is still quadratic in the tangent plane.
+  - ADES PSV output and cutout GIFs (`report.py`).
+  - `n_refine` 400 → 2000: didn't change crowded-field completeness
+    overall (0.73 at W1 14.5–15.5).
+  - Per-visit thresholds from time-scrambled copies (`nullcal.py`;
+    `detect --null-scrambles`, default 2 for WISE). Completeness at the
+    same false-alarm rate: 0.79 → 0.90 at W1 15–15.5, 0.37 → 0.50 at
+    15.5–16. The null level is a mid-tail statistic (5th-highest score per
+    copy), which one copy measures with ~5–10% scatter.
+  - Local noise map (`preprocess.local_sigma`). The highest-ranked false
+    tracks in scrambled copies of the Oceana visit came from scattered
+    light: a fan of streaks along the cutout edge in two frames, from a
+    bright star just outside the field. On the bulge visit v012 the
+    SNR scatter within 10 px of frame edges was 1.3–1.5 (1.0 elsewhere;
+    clean visits show no edge effect, and native frames are clean at their
+    edges). Deflating weights where the scatter in 31-px windows exceeds
+    1.2 brings v012's edges to 1.0 and its z>5 tail down ~20×. It deflates
+    1–7% of each Oceana frame.
+  - Bright-object astrometry (found with ADES on the Lachesis visit:
+    positions off SkyBoT by up to 0.8″ in an arch, fitted curvature −23
+    vs −14″/day²). Three causes, three fixes:
+    - The cosmic-ray ratio tests used Gaussian limits. Real WISE cores are
+      sharper (peak/neighbour ~2.0 vs 1.67, diagonal ~4 vs 2.8), so they
+      masked a bright asteroid's own pixels. Limits now come from the
+      frame's stars (width-selected to exclude hits; the visit median for
+      frames with < 10 stars). Masked neighbours are no longer counted as
+      zero. Fewer pixels get flagged per frame (10–50% fewer), so check the
+      false-alarm rate in the re-run.
+    - Partly masked frames count only above 60% PSF coverage, so the fit
+      bent the path to keep them. Final paths are now re-fitted on frames
+      with ≥ 90% coverage (`TrackEvaluator.refit_geometry`).
+    - The first local-noise version let Oceana's template imprints deflate
+      its own weights (score 263 → 204). Compact |z| > 5 sources are now
+      excluded from the estimate; extended streaks still count.
+  - `real_v2` (curved injections; acceleration fit, before local noise and
+    the fixes above): with per-visit thresholds, completeness rose at the
+    faint end (0.60 at W1 15.5–16, 0.28 at 16–16.5; `real_v1`: 0.50, 0.19)
+    but fell at the bright end (0.92 at 14–14.5). 12 of the 13 misses
+    brighter than 15 were fast movers (0.6–2.8 deg/day) on 3–5 frames with
+    no candidate at all. Two causes, on top of the cosmic-ray masking fix:
+    - Close objects curve far more than main-belt ones. The rate changes
+      with the distance, adding ~2 (v_r/v_⊥) rate² to the curvature:
+      340–970"/day² for the misses, against a bound of 150 × rate.
+      The bound now includes 500 × rate² (`accel_per_rate2`).
+    - Triage's bilinear coverage test is stricter than the exact one near
+      masked pixels, so a seed could score −inf and be dropped. Such seeds
+      now get the exact score.
+    Both checked on two of the misses (found at 52.8 and 40.3). Astrometry
+    was also worse (0.54" rms vs 0.30") and needs a recheck after the
+    re-run (`detections_m4b.json`). The simulated `wise_v1` run started
+    before these two changes.
+  - Pending, in order: the simulated regression run (`wise_v1`,
+    `detections_m4.json`), then `real_v1` and `real_v2` with every fix
+    (`detections_m4b.json`). After that, recalibrate `nullcal.NULL_RATIO`
+    and the fixed thresholds.
+- Real-data limits found in M3, and what became of them:
   - Crowded fields (|b| < ~20°) dominate the false-alarm tail. They also
     saturate the triage cap (`n_refine` = 400), which costs ~20% completeness
-    there. Options: a cap scaled with seed count, or star-subtracted
-    residuals (fewer seeds).
-  - Thresholds from 45 scrambled nulls are set by single events. More
-    scrambles per visit, or per-visit (crowding-dependent) thresholds, would
-    help.
-  - Photometry is 0.14 mag faint: an ePSF aperture correction, or the ePSF
-    itself as the matched filter.
+    there. → cap raised (no gain); per-visit thresholds and local noise
+    address the tail. Still open: star-subtracted residuals (fewer seeds).
+  - Thresholds from 45 scrambled nulls are set by single events. → per-visit
+    thresholds (done).
+  - Photometry is 0.14 mag faint. → aperture correction (done).
   - Tracks along cutout edges can fail flux consistency because of
-    edge-pixel outliers.
+    edge-pixel outliers. → local noise in crowded fields; recheck (2882).
   - `all_world2pix` diverges far outside a SIP frame; `io.world2pix` falls
     back to the linear inverse for those points.
 - Real WISE masks flag ~3% of pixels, scattered. Invalidating each bad
@@ -166,7 +235,14 @@ sweep.py, tests/
   (cache-blocked numba kernel, ~30 G adds/s, memory-bandwidth bound).
   Each doubling of the rate range is 4x the work, which is where a GPU
   backend pays off.
-- Open items for M4+: second-pass artifact masking on star-subtracted
+- False alarms on real data (scrambled `real_v1`, score ≥ 9, before local
+  noise): of 238, 146 have a frame within 15 px of a cutout edge, 145 a
+  bright source within 6 px, and 94 ≥ 10 bad pixels within 6 px; v012
+  dominates. They skew to tracks whose leave-one-out template had few
+  frames (2–5, vs 6–8 for real detections), but a cut on that costs too much
+  completeness (≥ 4 frames: −32% false alarms, −11% real).
+- Open items for M4+: WISE artifact tables (`-art`: spikes, halos,
+  latents) as masks; a template-depth-dependent threshold; second-pass artifact masking on star-subtracted
   residuals back-projected to native pixels (cosmic rays on bright-star
   wings escape the flat-background sharpness tests; vetting currently
   catches them); real WISE PSF (wings) in both simulator and detector;
@@ -184,7 +260,9 @@ sweep.py, tests/
 3. **Real WISE data.** query/download/cache, mask bits, visits, known-object
    association, injection-recovery, MOST-based known-NEO test set.
 4. **Robustness and reporting.** WISE PSF model (wings), bright-star
-   artifacts/latents, MPC/ADES output, cutout GIFs.
+   artifacts/latents, MPC/ADES output, cutout GIFs. Added during M4:
+   aperture correction, curved paths (acceleration fit, orbit injection),
+   per-visit thresholds, local noise map.
 5. **Generic user input.** Directory/glob, PNG + sidecar times, star-matching
    registration; ground preset tuning.
 6. **Performance.** numba CPU and CuPy GPU backends for shift-and-stack;

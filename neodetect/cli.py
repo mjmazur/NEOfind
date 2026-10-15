@@ -1,4 +1,7 @@
-"""Command-line interface: ``python -m neodetect {detect,evaluate,validate}``."""
+"""Command-line interface: ``python -m neodetect {detect,evaluate,validate}``.
+
+    python -m neodetect detect data/neowise/<visit> --ades obs.psv --gifs cutouts/
+"""
 
 import argparse
 import json
@@ -76,6 +79,7 @@ def _label_known(doc, known, scale_arcsec):
         for a in known["asteroids"]:
             if match_detection(d, a, scale_arcsec):
                 d["known"] = a.get("name", a["id"])
+                d["known_id"] = a["id"]
                 break
 
 
@@ -99,8 +103,20 @@ def cmd_detect(args) -> int:
 
     inputs = args.inputs if len(args.inputs) > 1 else args.inputs[0]
     seq = load_sequence(inputs)
-    result = detect(seq, _config(args), log=lambda m: print(m, file=sys.stderr))
+    cfg = _config(args)
+    log = lambda m: print(m, file=sys.stderr)
+    result = detect(seq, cfg, log=log)
     doc = result.to_dict()
+    n_null = args.null_scrambles
+    if n_null is None:
+        from .io import default_null_scrambles
+        n_null = default_null_scrambles(seq.frames[0])
+    if n_null:
+        from . import nullcal
+        ratios = dict(zip(nullcal.FRAME_CLASSES, args.null_ratio)) if args.null_ratio else None
+        cal = nullcal.self_calibrate(seq, cfg, n=n_null, ratios=ratios, log=log)
+        nullcal.apply(doc["detections"], cal["thresholds"])
+        doc["null_calibration"] = cal
     doc["frames"] = [{"path": f.path, "mjd": f.mjd} for f in seq.frames]
     if seq.truth:
         doc["truth_eval"] = truth_eval(seq, result)
@@ -121,6 +137,16 @@ def cmd_detect(args) -> int:
     if "known_eval" in doc:
         _print_known(doc, seq.known)
     print(f"wrote {out}")
+    if args.ades:
+        from .report import ades_rows, write_ades_psv
+        rows = ades_rows(doc, [f.header for f in seq.frames], station=args.station)
+        stn = rows[0]["stn"] if rows else (args.station or "XXX")
+        path = write_ades_psv(rows, args.ades, observatory=stn)
+        print(f"wrote {path} ({len(rows)} observations)")
+    if args.gifs:
+        from .report import write_cutout_gifs
+        paths = write_cutout_gifs(result, doc, args.gifs)
+        print(f"wrote {len(paths)} cutout GIFs to {args.gifs}")
     if args.plot:
         from .overlay import plot_detections
         png = out.with_suffix(".png")
@@ -151,8 +177,25 @@ def cmd_evaluate(args) -> int:
         for c in s[key]:
             print(f"{c['lo']:6.2f}-{c['hi']:<7.2f} {c['n']:4d} {c['completeness']:8.2f} "
                   f"{c['median_ideal_snr']:9.1f} {fmt(c['median_measured_at_truth']):>10}")
+    pv = s.get("per_visit")
+    if pv:
+        r = pv["ratios"]
+        print(f"\nper-visit thresholds (null level = rank-{pv['rank']} score on scrambled copies): "
+              f"level x {r['3']:.2f} / {r['4']:.2f} / {r['5+']:.2f} for 3 / 4 / >=5 frames, "
+              f"{pv['false_per_null_run']:.3f} false per held-out null run")
+        print(f"  -> neodetect detect --null-ratio {r['3']:.2f} {r['4']:.2f} "
+              f"{r['5+']:.2f}")
+        print(f"  {'visit':>40} {'level':>6} {'thr 5+':>6} {'n':>4} {'complete':>8}")
+        for v, x in pv["visits"].items():
+            c = f"{x['completeness']:8.2f}" if x["completeness"] is not None else "       -"
+            print(f"  {v[-40:]:>40} {x['level']:6.2f} {x['thresholds']['5+']:6.2f} "
+                  f"{x['n_asteroids']:4d} {c}")
+        for name, key in (("magnitude", "completeness_by_mag"), ("rate deg/day", "completeness_by_rate")):
+            print(f"\n{name:>14} {'n':>4} {'complete':>8}   (per-visit thresholds)")
+            for c in pv[key]:
+                print(f"{c['lo']:6.2f}-{c['hi']:<7.2f} {c['n']:4d} {c['completeness']:8.2f}")
     if s["accuracy"]:
-        print("\naccuracy of detected asteroids:")
+        print("\naccuracy of detected asteroids (global thresholds):")
         for k, v in s["accuracy"].items():
             print(f"  {k:18s} median {v['median']:+.3f}  rms {v['rms']:.3f}  |90%| {v['p90_abs']:.3f}")
     if s["errors"]:
@@ -179,6 +222,17 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("inputs", nargs="+", help="a directory, FITS files, or glob patterns")
     d.add_argument("-o", "--output", help="output JSON (default: DIR/detections.json)")
     d.add_argument("--plot", action="store_true", help="also write an overlay PNG")
+    d.add_argument("--ades", metavar="FILE", help="write detections as ADES PSV (MPC format)")
+    d.add_argument("--station", help="MPC observatory code for --ades (default: C51 for WISE, "
+                                     "else the header's MPCCODE)")
+    d.add_argument("--gifs", metavar="DIR", help="write an animated cutout GIF per detection")
+    d.add_argument("--null-scrambles", type=int, default=None, metavar="N",
+                   help="set this visit's thresholds from N time-scrambled copies of it "
+                        "(one detector run each; see nullcal), overriding --threshold*; "
+                        "0 = off (default: 2 for real WISE frames, else 0)")
+    d.add_argument("--null-ratio", type=float, nargs=3, metavar=("R3", "R4", "R5"),
+                   help="threshold / null level for 3, 4, >=5 frames (default: the real-NEOWISE "
+                        "calibration in nullcal; `evaluate` prints new ones)")
     _add_detector_args(d)
     d.set_defaults(func=cmd_detect)
 

@@ -36,7 +36,7 @@ from astropy.wcs import WCS
 from scipy import ndimage
 from scipy.ndimage import map_coordinates
 
-from .cosmics import estimate_sky, sharp_outliers
+from .cosmics import estimate_sky, measured_sharpness, sharp_outliers, star_sharpness_limits
 from .io import Frame, Sequence, default_psf_fwhm_arcsec, robust_sigma
 from .psf import FWHM_TO_SIGMA
 
@@ -128,17 +128,33 @@ def build_grid(frames: List[Frame], ref: int, region=None, margin_px: int = 4,
     return g
 
 
-def _prepare_native(f: Frame, psf_sigma_native: float, outlier_nsig: float):
-    """Sky-subtracted image, 1-sigma map, and bad mask including sharp outliers."""
+def _native_resid(f: Frame):
+    """Sky-subtracted image and 1-sigma map."""
     sky = estimate_sky(f.data, f.bad)
     resid = f.data - sky
     if f.unc is not None:
         sig = f.unc.astype(np.float32)
     else:
         sig = np.full(f.shape, robust_sigma(resid[~f.bad][::7]), dtype=np.float32)
+    return resid, sig
+
+
+def _sharpness(f: Frame, resid, sig):
+    return measured_sharpness(np.where(f.bad, 0.0, resid).astype(np.float32),
+                              np.where(f.bad | ~np.isfinite(sig), np.inf, sig).astype(np.float32),
+                              f.bad)
+
+
+def _prepare_native(f: Frame, psf_sigma_native: float, outlier_nsig: float, resid, sig,
+                    sharp_fallback=None):
+    """Bad mask including sharp outliers. The outlier tests' ratio limits come
+    from the frame's stars, else ``sharp_fallback`` (the visit's)."""
     bad = f.bad.copy()
+    r = np.where(bad, 0.0, resid).astype(np.float32)
+    s = np.where(bad | ~np.isfinite(sig), np.inf, sig).astype(np.float32)
+    limits = star_sharpness_limits(r, s, bad, psf_sigma_native, fallback=sharp_fallback)
     hits = sharp_outliers(resid, np.where(bad, np.inf, sig), bad, psf_sigma_native,
-                          nsig=outlier_nsig)
+                          nsig=outlier_nsig, limits=limits)
     n_hits = int(hits.sum())
     bad |= hits
     return resid, sig, bad, n_hits
@@ -174,6 +190,11 @@ def register(seq: Sequence, ref: Optional[int] = None, region=None,
     psf_sigma = np.zeros(n)
     scale = np.ones(n)
     n_out = []
+    # Native residuals, and the outlier tests' sharpness limits pooled over
+    # the frames whose stars measure them (for frames with too few stars).
+    natives = [_native_resid(f) for f in frames]
+    meas = [m for m in (_sharpness(f, *nr) for f, nr in zip(frames, natives)) if m is not None]
+    pooled = tuple(float(v) for v in np.median(meas, axis=0)) if meas else None
     for k, f in enumerate(frames):
         fwhm = default_psf_fwhm_arcsec(f)
         sig_native = fwhm * FWHM_TO_SIGMA / f.pixel_scale_arcsec
@@ -181,7 +202,9 @@ def register(seq: Sequence, ref: Optional[int] = None, region=None,
         if zp_ref is not None and f.magzp is not None:
             scale[k] = 10 ** (0.4 * (zp_ref - f.magzp))
 
-        resid, sig, bad, n_hits = _prepare_native(f, sig_native, outlier_nsig)
+        resid, sig = natives[k]
+        natives[k] = None
+        resid, sig, bad, n_hits = _prepare_native(f, sig_native, outlier_nsig, resid, sig, pooled)
         n_out.append(n_hits)
         filled = _fill(resid, bad, max(sig_native, 1.0))
         sig = _fill(sig, bad | ~np.isfinite(sig), max(sig_native, 1.0))

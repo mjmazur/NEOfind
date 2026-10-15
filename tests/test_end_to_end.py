@@ -48,3 +48,18 @@ def test_no_detection_without_asteroids(tmp_path):
     seq = _simulate(tmp_path, "null", 0)
     res = detect(seq, DETECT)
     assert not any(d["detected"] for d in res.detections)
+
+
+@pytest.mark.slow
+def test_scrambled_copy_sets_visit_thresholds(tmp_path):
+    import numpy as np
+    from neodetect import nullcal
+    seq = _simulate(tmp_path, "ast", 3)
+    copy = nullcal.scrambled(seq, np.random.default_rng(0))
+    assert sorted(copy.times.tolist()) == sorted(seq.times.tolist())
+    assert list(copy.times) == sorted(copy.times)
+    assert any(a.path != b.path for a, b in zip(copy.frames, seq.frames))
+    cal = nullcal.self_calibrate(seq, DETECT, n=1)
+    assert 5.0 <= cal["level"] < 9.0
+    res = detect(seq, DETECT)
+    assert nullcal.apply(res.detections, cal["thresholds"]) >= 3

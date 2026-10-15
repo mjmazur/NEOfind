@@ -20,6 +20,13 @@ significance requirement:
   let through, while real point sources essentially never prefer the sharp
   model.
 
+The ratio limits are those of a Gaussian PSF of the frame's nominal width,
+or, where the frame's own bright stars are sharper (``star_sharpness_limits``:
+the real WISE core is, at some sub-pixel phases), the 95th percentile of
+the stars' ratios. With the Gaussian limits alone the tests flagged 9-31
+pixels of the bright asteroid (120) Lachesis (peak SNR ~40) in 4 of 12
+frames, wherever it fell near a pixel center.
+
 Flagged pixels are grown by one pixel. This must run before resampling,
 which would blur the distinction.
 """
@@ -66,6 +73,67 @@ def psf_sharpness_limits(sigma: float):
     return axis, diag, float(box / ring)
 
 
+STAR_SNR_MIN = 30.0  # peak SNR of the stars that calibrate the ratio limits
+STAR_MIN = 10
+STAR_QUANTILE = 0.95
+STAR_MIN_WIDTH = 0.7  # px: second-moment width that tells a star from a hit (~0.4)
+
+
+def _ratios(r, ys, xs):
+    """Per peak: max over axes of peak / mean(opposite pair), the same over
+    diagonals, and the largest 2x2 box containing the peak against its ring."""
+    def at(dy, dx):
+        return r[ys + dy, xs + dx]
+    c = at(0, 0)
+    axis = np.maximum(c / np.maximum(0.5 * (at(0, 1) + at(0, -1)), 1e-30),
+                      c / np.maximum(0.5 * (at(1, 0) + at(-1, 0)), 1e-30))
+    diag = np.maximum(c / np.maximum(0.5 * (at(1, 1) + at(-1, -1)), 1e-30),
+                      c / np.maximum(0.5 * (at(1, -1) + at(-1, 1)), 1e-30))
+    box_r = np.zeros(c.shape)
+    for oy in (-1, 0):
+        for ox in (-1, 0):
+            box = sum(at(oy + dy, ox + dx) for dy in (0, 1) for dx in (0, 1))
+            big = sum(at(oy + dy, ox + dx) for dy in range(-1, 3) for dx in range(-1, 3))
+            box_r = np.maximum(box_r, box / np.maximum(big - box, 1e-30))
+    return axis, diag, box_r
+
+
+def star_sharpness_limits(r: np.ndarray, s: np.ndarray, bad: np.ndarray, psf_sigma: float,
+                          fallback=None):
+    """Ratio limits (axis, diagonal, box): the Gaussian ones, raised to the
+    stars' (``measured_sharpness``), or to ``fallback`` (e.g. pooled over a
+    visit) when the frame has too few bright stars."""
+    gauss = psf_sharpness_limits(round(float(psf_sigma), 3))
+    meas = measured_sharpness(r, s, bad)
+    if meas is None:
+        meas = fallback
+    return gauss if meas is None else tuple(max(g, m) for g, m in zip(gauss, meas))
+
+
+def measured_sharpness(r: np.ndarray, s: np.ndarray, bad: np.ndarray):
+    """The ``STAR_QUANTILE`` of bright unmasked stars' (axis, diagonal, box)
+    ratios, or None with fewer than ``STAR_MIN`` stars. Bright cosmic-ray
+    hits are peaks too; they are told apart by their width (5x5 second
+    moment)."""
+    h, w = r.shape
+    clean = ndimage.minimum_filter((~bad & np.isfinite(s)).astype(np.uint8), size=5).astype(bool)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        snr = np.where(clean, r / s, 0.0)
+    peak = (r == ndimage.maximum_filter(r, 5)) & (snr > STAR_SNR_MIN)
+    peak[:3, :] = peak[-3:, :] = False
+    peak[:, :3] = peak[:, -3:] = False
+    ys, xs = np.nonzero(peak)
+    oy, ox = np.mgrid[-2:3, -2:3]
+    cut = np.maximum(r[ys[:, None] + oy.ravel(), xs[:, None] + ox.ravel()], 0.0)
+    tot = cut.sum(axis=1)
+    m2 = (cut * (oy.ravel() ** 2 + ox.ravel() ** 2)).sum(axis=1) / np.maximum(tot, 1e-30)
+    star = np.sqrt(0.5 * m2) >= STAR_MIN_WIDTH
+    ys, xs = ys[star], xs[star]
+    if ys.size < STAR_MIN:
+        return None
+    return tuple(float(np.quantile(v, STAR_QUANTILE)) for v in _ratios(r, ys, xs))
+
+
 def _shift(a, dy, dx):
     """a shifted so out[y, x] = a[y + dy, x + dx] (zero outside)."""
     out = np.zeros_like(a)
@@ -78,28 +146,40 @@ def _shift(a, dy, dx):
 
 def sharp_outliers(resid: np.ndarray, sigma_map: np.ndarray, bad: np.ndarray,
                    psf_sigma: float, nsig: float = 4.0, margin: float = 1.2,
-                   grow: int = 1) -> np.ndarray:
-    """Mask of pixels too sharp to be a PSF (plus ``grow`` px around them)."""
+                   grow: int = 1, limits=None) -> np.ndarray:
+    """Mask of pixels too sharp to be a PSF (plus ``grow`` px around them).
+    ``limits``: (axis, diagonal, box) ratio limits; default from the
+    frame's stars (``star_sharpness_limits``)."""
     r = np.where(bad, 0.0, resid).astype(np.float32)
     s = np.where(bad | ~np.isfinite(sigma_map), np.inf, sigma_map).astype(np.float32)
-    axis, diag, box_lim = psf_sharpness_limits(round(float(psf_sigma), 3))
+    if limits is None:
+        limits = star_sharpness_limits(r, s, bad, psf_sigma)
+    axis, diag, box_lim = limits
     hit = np.zeros(r.shape, bool)
+    # Masked neighbors are left out of the comparisons (counted as 0 they
+    # would make a source next to a masked pixel look twice as sharp).
+    ok = (~bad & np.isfinite(s)).astype(np.float32)
 
     for (dy, dx), lim in (((0, 1), axis), ((1, 0), axis), ((1, 1), diag), ((1, -1), diag)):
         lim *= margin
-        pair = 0.5 * (_shift(r, dy, dx) + _shift(r, -dy, -dx))
-        noise = s * math.sqrt(1.0 + 0.5 * lim * lim)
-        hit |= (r - lim * np.maximum(pair, 0.0) > nsig * noise) & (r > nsig * s)
+        n_ok = _shift(ok, dy, dx) + _shift(ok, -dy, -dx)
+        pair = (_shift(r, dy, dx) + _shift(r, -dy, -dx)) / np.maximum(n_ok, 1.0)
+        noise = s * np.sqrt(1.0 + lim * lim / np.maximum(n_ok, 1.0))
+        hit |= (r - lim * np.maximum(pair, 0.0) > nsig * noise) & (r > nsig * s) & (n_ok > 0)
 
     # 2x2 boxes anchored at (y, x) .. (y+1, x+1) against the surrounding ring.
     lim = margin * box_lim
     s2 = np.where(np.isfinite(s), s, 0.0)
     box = r + _shift(r, 0, 1) + _shift(r, 1, 0) + _shift(r, 1, 1)
     big = sum(_shift(r, dy, dx) for dy in range(-1, 3) for dx in range(-1, 3))
-    ring = big - box
+    n_big = sum(_shift(ok, dy, dx) for dy in range(-1, 3) for dx in range(-1, 3))
+    n_box = ok + _shift(ok, 0, 1) + _shift(ok, 1, 0) + _shift(ok, 1, 1)
+    n_ring = n_big - n_box
+    ring = (big - box) * 12.0 / np.maximum(n_ring, 1.0)
     sig_box = np.sqrt(sum(_shift(s2, dy, dx) ** 2 for dy in (0, 1) for dx in (0, 1)))
     noise = sig_box * math.sqrt(1.0 + 3.0 * lim * lim)  # ring has 3x the box's pixels
-    box_hit = (box - lim * np.maximum(ring, 0.0) > nsig * noise) & (box > nsig * sig_box)
+    box_hit = ((box - lim * np.maximum(ring, 0.0) > nsig * noise) & (box > nsig * sig_box)
+               & (n_ring >= 6))
     box_hit &= np.isfinite(s)
     if box_hit.any():
         # Mark all four pixels of each flagged box.

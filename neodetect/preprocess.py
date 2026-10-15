@@ -20,6 +20,21 @@ the PSF-fit flux and ``psi/sqrt(phi)`` its SNR. Because resampled noise is
 spatially correlated, the SNR map's empirical scatter on blank sky (``c_k``)
 is used to rescale ``w_k`` so the SNR is N(0, 1) by construction; fluxes are
 unaffected.
+
+**Local noise.** The noise model is global per frame, but real frames have
+patches where residuals are far noisier than it says: scattered light and
+spikes from bright stars just outside the field (a fan of streaks along a
+cutout edge in some frames of the Oceana visit, where scrambled copies
+found their best false tracks), and in dense Galactic fields the frame
+edges (SNR scatter 1.3-1.5 within 10 px of the edge on the bulge visit,
+1.0 elsewhere). Per frame, the local SNR scatter ``s`` is estimated in
+``local_noise_px`` windows from the mean of ``min(|z|, 2.5)``, leaving out
+the surroundings of strong sources (a bright asteroid's negative imprints
+in the templates of the other frames would otherwise deflate its own
+weights: Oceana lost 23% of its score), and where ``s``
+exceeds ``LOCAL_NOISE_MIN`` the weights are divided by ``s^2``, so the SNR
+there is again ~N(0, 1). Clean frames are left alone (the estimate's own
+scatter is ~8%).
 """
 
 import math
@@ -37,6 +52,10 @@ MIN_TEMPLATE_FRAMES = 2  # other frames required to form a pixel's template
 OUTLIER_NSIG = 4.0
 OUTLIER_FRAC = 0.1  # extra fractional tolerance on bright pixels when clipping
 MIN_PSF_COVERAGE = 0.6  # fraction of PSF weight on valid pixels to use a position
+LOCAL_NOISE_MIN = 1.2  # local SNR scatter above which weights are deflated
+LOCAL_NOISE_CLIP = 2.5  # |z| clipped here in the local scatter estimate
+LOCAL_NOISE_SOURCE = 5.0  # compact sources above this |z| are left out of it
+LOCAL_NOISE_COMPACT_PX = 100  # largest such source (a PSF core at SNR ~1000 is ~60 px)
 
 
 @dataclass
@@ -84,7 +103,43 @@ def _template(reg: Registered):
     return uw, W, S, cnt
 
 
-def preprocess(reg: Registered, log=None) -> Preprocessed:
+def _mean_abs_clipped(s, c=LOCAL_NOISE_CLIP):
+    """E[min(|z|, c)] for z ~ N(0, s^2)."""
+    from scipy.special import erf
+    u = c / np.asarray(s, float)
+    return s * (math.sqrt(2.0 / math.pi) * (1.0 - np.exp(-0.5 * u * u))
+                + u * (1.0 - erf(u / math.sqrt(2.0))))
+
+
+_S_GRID = np.linspace(0.3, 6.0, 400)
+_M_GRID = _mean_abs_clipped(_S_GRID)
+
+
+def local_sigma(z: np.ndarray, usable: np.ndarray, size: int) -> np.ndarray:
+    """Local scatter of an SNR map in ``size`` windows, from the mean of
+    |z| clipped at ``LOCAL_NOISE_CLIP`` (inverted for the clipping), leaving
+    out pixels within 3 px of a compact strong source (|z| >
+    ``LOCAL_NOISE_SOURCE`` over at most ``LOCAL_NOISE_COMPACT_PX`` px): a
+    bright asteroid or its imprints in the other frames' templates must not
+    deflate its own weights, while extended structure (scattered-light
+    streaks) must count. 1 where under a third of a window counts."""
+    from scipy.ndimage import label, maximum_filter, uniform_filter
+    lab, n = label(np.abs(z) > LOCAL_NOISE_SOURCE)
+    strong = np.zeros(z.shape, bool)
+    if n:
+        compact = np.bincount(lab.ravel()) <= LOCAL_NOISE_COMPACT_PX
+        compact[0] = False
+        strong = maximum_filter(compact[lab], size=7)
+    use = usable & ~strong
+    a = np.where(use, np.minimum(np.abs(z), LOCAL_NOISE_CLIP), 0.0).astype(np.float32)
+    num = uniform_filter(a, size, mode="constant")
+    den = uniform_filter(use.astype(np.float32), size, mode="constant")
+    with np.errstate(divide="ignore", invalid="ignore"):
+        m = np.where(den > 1.0 / 3.0, num / den, _M_GRID[np.searchsorted(_S_GRID, 1.0)])
+    return np.interp(m, _M_GRID, _S_GRID).astype(np.float32)
+
+
+def preprocess(reg: Registered, log=None, local_noise_px: int = 31) -> Preprocessed:
     log = log or (lambda *a: None)
     n = reg.n
     uw, W, S, cnt = _template(reg)
@@ -129,6 +184,7 @@ def preprocess(reg: Registered, log=None) -> Preprocessed:
     psi = np.zeros_like(reg.data)
     phi = np.zeros_like(reg.data)
     calib = np.ones(n)
+    n_noisy = []
     star_free = np.abs(template_all) < 3.0 * np.sqrt(np.median(1.0 / np.maximum(
         weight[weight > 0][:: 97], 1e-30)))
     for k in range(n):
@@ -147,7 +203,19 @@ def preprocess(reg: Registered, log=None) -> Preprocessed:
         weight[k] /= c2
         psi[k] = p / c2
         phi[k] = f / c2
+        if local_noise_px:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                z = np.where(usable, psi[k] / np.sqrt(np.where(usable, phi[k], 1.0)), 0.0)
+            s = local_sigma(z, usable, local_noise_px)
+            noisy = s > LOCAL_NOISE_MIN
+            n_noisy.append(round(float(np.mean(noisy[usable])) if usable.any() else 0.0, 4))
+            if noisy.any():
+                weight[k] /= np.where(noisy, s * s, 1.0)
+                psi[k] = np.where(usable, separable_correlate(weight[k] * resid[k], kern), 0.0)
+                phi[k] = np.where(usable, separable_correlate(weight[k], kern ** 2), 0.0)
     log(f"SNR calibration c_k = {np.round(calib, 3).tolist()}")
+    if local_noise_px:
+        log(f"local noise: fraction of each frame deflated = {n_noisy}")
 
     return Preprocessed(resid=resid, weight=weight.astype(np.float32),
                         psi=psi.astype(np.float32), phi=phi.astype(np.float32),

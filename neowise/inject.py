@@ -1,7 +1,8 @@
 """Injection-recovery and null tests on real frames.
 
-``inject_visit`` copies a downloaded visit, adding synthetic asteroids to
-the ``-int`` images, rendered with the visit's own empirical PSF (see
+``inject_visit`` copies a downloaded visit, adding synthetic asteroids --
+on heliocentric orbits seen from the spacecraft, so their paths curve as
+real ones do (``neosim.orbit``) -- to the ``-int`` images, rendered with the visit's own empirical PSF (see
 ``epsf``) at their predicted positions through each frame's real WCS, with
 fluxes from each frame's ``MAGZP`` (total flux; the 4% beyond the ePSF's
 8-px radius is left out). Pixels that are NaN in the real data
@@ -30,7 +31,8 @@ from astropy.io import fits
 from neodetect.io import default_psf_fwhm_arcsec, load_sequence, read_image, world2pix
 from neodetect.psf import FWHM_TO_SIGMA
 from neosim.astrometry import tangent_to_equatorial
-from neosim.motion import Asteroid
+from neosim.orbit import (KM_S_TO_AU_DAY, OrbitMover, draw_distance, earth_heliocentric_velocity,
+                          sky_basis)
 
 from .epsf import EPSF, build_epsf
 
@@ -85,20 +87,31 @@ def _sky_center(seq):
     return math.degrees(math.atan2(v[1], v[0])) % 360.0, math.degrees(math.asin(v[2] / np.linalg.norm(v)))
 
 
-def make_asteroids(seq, n, mag_range, rate_range, rng, half_size_deg) -> list:
-    """Random linear movers placed uniformly in a square about the visit
-    center at the mid time (no light curves: real data has its own noise)."""
+def _observer_offset(frame):
+    """Earth-to-spacecraft vector (AU, ICRS) from a WISE header; zeros otherwise."""
+    h = frame.header
+    return np.array([float(h.get(f"ERTH2SC{c}", 0.0)) for c in "XYZ"])
+
+
+def make_asteroids(seq, n, mag_range, rate_range, rng, half_size_deg, t_ref, ra0, dec0) -> list:
+    """Random movers placed uniformly in a square about the visit center at
+    ``t_ref``, on heliocentric two-body orbits (``neosim.orbit``): their paths
+    curve as real ones do (no light curves: real data has its own noise).
+    Distance follows from the rate (``draw_distance``); the radial velocity is
+    the observer's own along the line of sight plus up to 10 km/s."""
+    off = np.mean([_observer_offset(f) for f in seq.frames], axis=0)
+    v_obs = earth_heliocentric_velocity(t_ref)
     out = []
     for i in range(n):
         rate = math.exp(rng.uniform(math.log(rate_range[0]), math.log(rate_range[1])))
         pa = rng.uniform(0.0, 360.0)
-        r = math.radians(rate)
-        out.append(Asteroid(
-            id=i, mag=float(rng.uniform(*mag_range)), rate_deg_day=rate, pa_deg=pa,
-            xi0=math.radians(rng.uniform(-half_size_deg, half_size_deg)),
-            eta0=math.radians(rng.uniform(-half_size_deg, half_size_deg)),
-            vxi=r * math.sin(math.radians(pa)), veta=r * math.cos(math.radians(pa)),
-            axi=0.0, aeta=0.0, lc_amp=0.0, lc_period_h=1.0, lc_phase=0.0))
+        xi = math.radians(rng.uniform(-half_size_deg, half_size_deg))
+        eta = math.radians(rng.uniform(-half_size_deg, half_size_deg))
+        ra, dec = (float(v) for v in tangent_to_equatorial(xi, eta, ra0, dec0))
+        los = sky_basis(ra, dec)[0]
+        vr = -float(v_obs @ los) / KM_S_TO_AU_DAY + rng.uniform(-10.0, 10.0)
+        out.append(OrbitMover.from_sky(i, float(rng.uniform(*mag_range)), ra, dec, rate, pa,
+                                       draw_distance(rate, rng), vr, t_ref, observer_offset_au=off))
     return out
 
 
@@ -115,7 +128,7 @@ def inject_visit(visit_dir, out_dir, n: int = 20, mag_range=(13.5, 16.5), rate_r
         meta = json.loads((visit_dir / "visit.json").read_text()) if (visit_dir / "visit.json").exists() else {}
         half_size_deg = 0.45 * (meta.get("size_deg") or 0.7)
     t_ref = float(np.mean(seq.times))
-    asteroids = make_asteroids(seq, n, mag_range, rate_range, rng, half_size_deg)
+    asteroids = make_asteroids(seq, n, mag_range, rate_range, rng, half_size_deg, t_ref, ra0, dec0)
 
     truth = {"target_ra_deg": ra0, "target_dec_deg": dec0, "t_ref_mjd": t_ref,
              "source_visit": str(visit_dir), "seed": seed,
@@ -123,6 +136,8 @@ def inject_visit(visit_dir, out_dir, n: int = 20, mag_range=(13.5, 16.5), rate_r
              "pixel_convention": "0-based, pixel centers at integers (astropy origin=0)",
              "asteroids": []}
     per_ast = {a.id: [] for a in asteroids}
+    paths = {a.id: np.array([np.ravel(a.radec(f.mjd, _observer_offset(f))) for f in seq.frames])
+             for a in asteroids}
     for k, f in enumerate(seq.frames):
         src = Path(f.path)
         raw, header = read_image(src)
@@ -130,7 +145,7 @@ def inject_visit(visit_dir, out_dir, n: int = 20, mag_range=(13.5, 16.5), rate_r
         assert raw.shape == f.shape
         h, w = f.shape
         for a in asteroids:
-            ra, dec = a.radec(f.mjd, t_ref, ra0, dec0)
+            ra, dec = paths[a.id][k]
             x, y = (float(v) for v in world2pix(f.wcs, ra, dec))
             flux = 10.0 ** (-0.4 * (a.mag - f.magzp))
             ix, iy = int(round(x)), int(round(y))

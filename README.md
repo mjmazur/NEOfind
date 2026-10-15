@@ -3,7 +3,8 @@
 Find moving objects (asteroids) in sequences of astronomical images, with
 first-class support for WISE/NEOWISE single-exposure frames. See `PLAN.md` for
 the full design and milestones. Status: **milestones 1 (simulator), 2
-(detector on simulated WISE data) and 3 (real NEOWISE data) done**.
+(detector on simulated WISE data) and 3 (real NEOWISE data) done; 4
+(robustness and reporting) in progress**.
 
 ## Simulator (`neosim`)
 
@@ -80,6 +81,7 @@ Each FITS header carries a TAN WCS plus `MJD-OBS` (exposure start),
 python -m neodetect detect sims/<run> --plot          # -> detections.json / .png
 python -m neodetect detect frame_*-int.fits.fz         # any FITS frames with WCS + time
 python -m neodetect detect DIR --region 150.1 12.3 0.5 # search one 0.5 deg square
+python -m neodetect detect DIR --ades obs.psv --gifs cutouts/  # MPC report + vetting GIFs
 python -m neodetect validate sims/<null-run>           # noise whitening self-check
 python sweep.py -o sims/sweeps/wise_v1 --runs 24 --nulls 24
 python -m neodetect evaluate sims/sweeps/wise_v1       # completeness / false alarms
@@ -97,7 +99,12 @@ Pipeline:
    sky; mask cosmic rays and hot pixels with three tests bounded by what the
    PSF can produce: peak vs opposite-neighbor pairs, 2×2 box vs ring, and a
    PSF-vs-sharp-profile χ² comparison (catches ~91% of simulated WISE hits,
-   masks no asteroids).
+   masks no asteroids). The ratio limits come from each frame's own bright
+   stars when they are sharper than the nominal Gaussian, as real WISE
+   cores are (frames with too few stars use the visit's median). Masked
+   neighbours are left out of the comparisons. With Gaussian limits the
+   tests masked parts of the bright asteroid (120) Lachesis in 4 of 12
+   frames.
 2. **Registration** (`register.py`): resample every frame (cubic spline)
    onto one TAN grid covering the union of footprints, scaled to a common
    zero point; per-frame validity tracks partial coverage. Masked pixels are
@@ -107,7 +114,13 @@ Pipeline:
    inverse-variance template (an asteroid never subtracts itself); noise
    model `alpha_k·(var + var_template) + beta·T²`; PSF matched-filter maps
    `psi = P⋆(w r)`, `phi = P²⋆w`, with weights rescaled so the SNR map is
-   N(0, 1) on blank sky (absorbs interpolation-correlated noise).
+   N(0, 1) on blank sky (absorbs interpolation-correlated noise). A
+   *local* noise map (SNR scatter in 31-px windows) then deflates the
+   weights wherever a frame is noisier than the model says: scattered light
+   from bright stars outside the field, crowded-field frame edges
+   (`local_noise_px`, 0 = off). Compact sources (asteroids, star
+   residuals, an asteroid's imprints in other frames' templates) are left
+   out of the estimate, so a bright asteroid doesn't down-weight itself.
 4. **Seeding**, two paths:
    - *Linking* (`sources.py`, `linking.py`): single-frame peaks ≥ 4σ;
      every pair at a plausible rate (up to 10 deg/day) is propagated to
@@ -120,12 +133,46 @@ Pipeline:
 5. **Track fit** (`trackfit.py`): exact PSF-stamp matched filter per frame,
    robust combination (frames far *above* the median flux are dropped, e.g.
    a cosmic ray on the track; low frames are kept as evidence against),
-   Nelder–Mead refinement of position and velocity.
+   Nelder–Mead refinement of position, velocity and a bounded acceleration.
+   Seen from Earth or WISE, asteroid paths curve: the observer accelerates
+   toward the Sun, so a main-belt asteroid's path bends ~15"/day² and
+   strays up to 3" (1 WISE px) from a straight line over a visit. The bound
+   is max(60, 150 × rate, 500 × rate²) "/day² (rate in deg/day). The rate²
+   term is for close objects, whose rate changes with their distance.
+   A final track's path is re-fitted on its fully covered frames (≥ 90%
+   of the PSF on valid pixels). Otherwise the fit can bend the path toward
+   valid pixels to keep a partly masked frame; that put Lachesis's
+   positions 0.8″ off.
 6. **Vetting** (`detector.py`): stationary sources rejected; per-frame
    fluxes must be consistent with one source (χ² p ≥ 1e-3, allowing 35%
    variability); a frame already claimed by a stronger track is released.
    Detection thresholds depend on how many frames a track uses (short
    tracks need more: chance alignments of PSF-like cosmic-ray residuals).
+   On real WISE frames they are set per visit (below).
+7. **Photometry** (`photometry.py`): Gaussian-fit fluxes are scaled to
+   total flux with an aperture correction measured on the visit's own
+   bright isolated stars (≥ 8 needed; ~1.15 on NEOWISE W1, the fallback in
+   crowded fields; ~1.00 on simulations).
+
+**Per-visit thresholds** (`nullcal.py`). On real data the false-alarm tail
+varies far more between visits than one global threshold can follow. So
+`detect` runs the detector on time-scrambled copies of the visit
+(`--null-scrambles N`, default 2 on real WISE frames, 0 = off). The visit's
+*null level* is the median over copies of the 5th-highest candidate score.
+The thresholds are that level × 1.81 / 1.53 / 1.39 for 3 / 4 / ≥5-frame
+tracks (`--null-ratio`). The factors are calibrated on `sims/real_v1` so
+that held-out scrambled copies give ≤ 0.05 false detections per visit.
+Each copy costs one detector run.
+
+**Reporting** (`report.py`): `--ades FILE` writes ADES PSV for the MPC,
+one row per frame a detection uses: the track position at that frame's
+time, uncertainties from the centroid error plus a 0.25" floor, and the
+per-frame magnitude (uncertainty floor 0.03 mag). For WISE the station is C51 and each row carries the
+spacecraft position from `ERTH2SC`. Known objects get their designation.
+The submitter/observer names are placeholders. Check the WISE `mode` and
+`astCat` values against the MPC's documentation before a real submission.
+`--gifs DIR` writes an animated cutout per detection: registered image and
+static-sky residual with the predicted position marked.
 
 Output per detection: score, frames used/covered, RA/Dec and rate/PA at
 `t_ref`, mean flux and magnitude, and per frame the MJD, RA/Dec, native
@@ -134,7 +181,9 @@ pixel position, flux, flux error and SNR.
 `evaluate` matches detections to the truth (median separation < 2 px),
 calibrates the three thresholds on the asteroid-free runs (splitting the
 false-alarm budget), and reports completeness by magnitude, rate and ideal
-SNR, plus astrometric/photometric accuracy.
+SNR, plus astrometric/photometric accuracy. On real-data sweeps (several
+scrambled copies per visit) it also calibrates the per-visit factors,
+holding out each copy, and reports completeness with per-visit thresholds.
 
 ### Measured performance (simulated WISE W1)
 
@@ -165,7 +214,11 @@ evaluation (96 runs, `-j 4`) takes ~1.5 h.
 11–18 frames each, 2014–2015). Each visit has 2 injected copies (20
 asteroids each, W1 13.5–17, 0.05–3 deg/day; 489 covered by ≥ 3 frames) and
 3 time-scrambled copies (45 null runs). The detector runs with its default
-settings; the thresholds below are calibrated on the scrambled nulls.
+settings; the thresholds below are calibrated on the scrambled nulls. The
+numbers are from the M4 detector with aperture correction and
+`n_refine` = 2000 (`evaluation_m4.json`), before local noise and
+acceleration fitting. Results with those, and with curved injected paths
+(`sims/real_v2`), are pending.
 
 | | simulated (`wise_v1`) | real (`real_v1`) |
 |---|---|---|
@@ -187,10 +240,11 @@ a given magnitude. Their false-alarm tail is heavier, so the thresholds are
   v010–v013 toward the bulge). Every null-run score above 17 comes from
   v012. With 45 nulls, the 3-frame threshold is set by a single event;
   20 is the top of the calibration grid.
-- **Crowded fields also lose completeness.** Triage refines at most
-  `n_refine` = 400 seed tracks. That cap is hit in all five crowded visits,
-  and there completeness at W1 14.5–15.5 is 0.73, against 0.93 elsewhere.
-  Raising the cap to 3000 recovers some tracks at ~1.4× the run time.
+- **Crowded fields also lose completeness.** Completeness at W1 14.5–15.5
+  is 0.73 in the five crowded visits, against 0.92 elsewhere. Those visits
+  hit the M3 triage cap (`n_refine` = 400). Raising it to 2000 (the M4
+  default) roughly doubles their refine time but didn't change completeness
+  overall; the per-visit thresholds do help (0.80).
 - **Known asteroids:** (224) Oceana and (120) Lachesis (W1 ≈ 11.7–11.8) are
   found in every copy at score 200–250, with positions within 0.1–0.2 px
   of the parallax-corrected SkyBoT ephemeris. The fainter known objects
@@ -198,10 +252,21 @@ a given magnitude. Their false-alarm tail is heavier, so the thresholds are
   of 14, is missed because its track runs along the cutout edge, where an
   edge-pixel outlier fails the flux-consistency test.
 - **Accuracy:** 0.30″ rms in position, 0.2% in rate, 0.09° in position
-  angle. Magnitudes are 0.14 mag too faint: the Gaussian matched filter
-  misses the real PSF's wings, and an aperture correction is still to do
-  (M4). By rate, completeness falls from 0.7 below 0.25 deg/day to 0.2–0.5
-  above, mostly because fast movers cross a 0.5° cutout in fewer frames.
+  angle, 0.04 mag rms in magnitude (bias −0.01). Before the aperture
+  correction (M3) magnitudes were 0.14 mag too faint. By rate, completeness falls from 0.7 below
+  0.25 deg/day to 0.2–0.5 above, mostly because fast movers cross a 0.5°
+  cutout in fewer frames.
+- **Per-visit thresholds**, same detections, same false-alarm rate:
+
+  | W1 mag | 14.5–15.0 | 15.0–15.5 | 15.5–16.0 | 16.0–16.5 |
+  |---|---|---|---|---|
+  | global thresholds | 0.94 | 0.79 | 0.37 | 0.01 |
+  | per-visit thresholds | 0.96 | 0.90 | 0.50 | 0.19 |
+
+  The ≥5-frame threshold ranges from 9.5 on clean visits to 20.6 on the
+  bulge visit v012. The 50% point moves to W1 ≈ 15.5–15.6. A single
+  scrambled copy is noisy: four copies of the Oceana visit gave levels of
+  7.7–8.4, hence the default of two.
 - **Cost:** ~3–6 min per visit on 32 cores. The full sweep (75 runs, `-j 4`)
   takes ~5 h.
 
@@ -241,6 +306,12 @@ python -m neodetect evaluate sims/real_v1             # completeness / false ala
 - **Injection** (`inject.py`): synthetic asteroids rendered with the visit's
   ePSF through each frame's real WCS and `MAGZP`, plus a `truth.json` in
   the simulator's format (known real objects included, flagged `real`).
+  Each asteroid follows a heliocentric two-body orbit
+  (`neosim/orbit.py`), seen from the spacecraft with light-time
+  correction, so paths curve as real ones do. It is set up from the sky
+  rate and direction plus a distance drawn as Δ = (8–20 km/s) / rate and a
+  radial velocity. With the right radial velocity this reproduces SkyBoT
+  paths of known asteroids to ~0.1".
   **Scrambled** copies keep every artifact but no real linear motion, and
   stand in for asteroid-free nulls when calibrating false alarms.
 

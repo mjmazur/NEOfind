@@ -1,4 +1,4 @@
-"""Link single-frame detections into linear-motion tracklets.
+"""Link single-frame detections into tracklets.
 
 Every pair of detections in two different frames, separated by a rate in
 ``[v_min, v_max]`` px/day, defines a trial track. It is propagated to every
@@ -10,7 +10,8 @@ per-detection error ``sigma_pos`` and a pair spanning ``dt`` centered at
 tightly and extrapolation more loosely (capped at ``r_max``).
 
 Trial tracks with at least ``min_detections`` supporting detections are
-refit by least squares and re-matched; duplicates (the same object found from
+refit by least squares (with a bounded acceleration once there are five
+points: real paths curve) and re-matched; duplicates (the same object found from
 many pairs) are merged by keeping the best-supported candidate among those
 sharing two or more detections.
 """
@@ -32,18 +33,31 @@ class Tracklet:
     sum_z: float
 
 
-def _lsq_track(frames, xs, ys, times, t_ref) -> Track:
+def _lsq_track(frames, xs, ys, times, t_ref, accel_max: float = 0.0) -> Track:
+    """Least-squares track: straight, or with a constant acceleration (bounded
+    by ``accel_max`` px/day^2 per axis) when there are >= 5 points to fit it."""
     t = times[frames] - t_ref
     a = np.vstack([np.ones_like(t), t]).T
     (x0, vx), *_ = np.linalg.lstsq(a, xs, rcond=None)
     (y0, vy), *_ = np.linalg.lstsq(a, ys, rcond=None)
-    return Track(float(x0), float(y0), float(vx), float(vy), t_ref)
+    straight = Track(float(x0), float(y0), float(vx), float(vy), t_ref)
+    if accel_max <= 0 or len(t) < 5:
+        return straight
+    q = np.vstack([np.ones_like(t), t, 0.5 * t * t]).T
+    cx, *_ = np.linalg.lstsq(q, xs, rcond=None)
+    cy, *_ = np.linalg.lstsq(q, ys, rcond=None)
+    if abs(cx[2]) > accel_max or abs(cy[2]) > accel_max:
+        return straight
+    return Track(float(cx[0]), float(cy[0]), float(cx[1]), float(cy[1]), t_ref,
+                 float(cx[2]), float(cy[2]))
 
 
 def link(dets: List[FrameDetections], times: np.ndarray, t_ref: float, v_min: float,
          v_max: float, min_detections: int = 3, sigma_pos: float = 0.5,
          n_sigma: float = 3.0, r_max: float = 6.0, min_dt: float = 0.0,
-         max_candidates: int = 200000, log=None) -> List[Tracklet]:
+         max_candidates: int = 200000, accel_bound=None, log=None) -> List[Tracklet]:
+    """``accel_bound(speed_px_day)``: the largest path curvature (px/day^2)
+    to fit for a tracklet moving that fast; None = straight tracklets."""
     log = log or (lambda *a: None)
     n = len(dets)
     trees = [cKDTree(np.column_stack([d.x, d.y])) if len(d) else None for d in dets]
@@ -98,7 +112,9 @@ def link(dets: List[FrameDetections], times: np.ndarray, t_ref: float, v_min: fl
             fr = np.array([k for k, _ in members])
             xs = np.array([dets[k].x[m] for k, m in members])
             ys = np.array([dets[k].y[m] for k, m in members])
-            tr = _lsq_track(fr, xs, ys, times, t_ref)
+            amax = accel_bound(np.hypot(xs[-1] - xs[0], ys[-1] - ys[0])
+                               / max(times[fr[-1]] - times[fr[0]], 1e-6)) if accel_bound else 0.0
+            tr = _lsq_track(fr, xs, ys, times, t_ref, amax)
             new = []
             for k in range(n):
                 if trees[k] is None:

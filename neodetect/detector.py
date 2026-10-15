@@ -11,12 +11,13 @@ import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
 
-from .io import Sequence, world2pix
+from .io import Sequence, default_aperture_correction, default_aperture_ee, world2pix
 from .linking import link
 from .preprocess import Preprocessed, preprocess
 from .register import Registered, register
 from .shiftstack import shift_and_stack
 from .sources import find_sources
+from .photometry import aperture_correction
 from .trackfit import Track, TrackEvaluator, TrackScore, robust_combine
 
 
@@ -44,12 +45,35 @@ class DetectorConfig:
     backend: str = "auto"
 
     # Track fit and vetting.
-    n_refine: int = 400
+    n_refine: int = 2000  # seeds refined, best first (crowded real fields exceed 400)
     min_frames: int = 3
     clip_sigma: float = 4.0
     frac_tol: float = 0.35  # max fractional flux variation between frames (~0.3 mag)
     stationary_fwhm: float = 2.0  # reject motion < this many PSF FWHM over the span
     min_consistency_p: float = 1e-3  # reject tracks whose per-frame fluxes disagree
+    # Path curvature fitted in refinement, bound per axis by
+    # max(accel_max, accel_per_rate * rate, accel_per_rate2 * rate^2) in
+    # arcsec/day^2 (rate in deg/day;
+    # accel_max 0 = straight tracks). Seen from Earth, curvature comes mostly
+    # from the observer's acceleration toward the Sun divided by the distance,
+    # as the rate does from relative velocity: main-belt asteroids show
+    # ~15"/day^2 at ~0.2 deg/day, |a|/rate 40-120 (``trackfit``).
+    accel_max_arcsec_day2: float = 60.0
+    accel_per_rate: float = 150.0
+    # Close objects: the rate itself changes as the distance does, curving
+    # the path by ~2 (v_r / v_perp) rate^2 -- up to ~1000"/day^2 at 1.7
+    # deg/day for injected NEOs at 0.2 AU closing at 30 km/s. With v_r /
+    # v_perp up to ~4 that is <= accel_per_rate2 * rate^2 (rate in deg/day).
+    accel_per_rate2: float = 500.0
+
+    # Deflate weights where a frame's local SNR scatter exceeds the noise
+    # model (scattered light, crowded-field edges; ``preprocess``); 0 = off.
+    local_noise_px: int = 31
+
+    # Photometry: scale Gaussian-fit fluxes to total flux using stars (see
+    # ``photometry``); aperture_ee None = instrument default (io).
+    aperture_correction: bool = True
+    aperture_ee: Optional[float] = None
 
     # Coherent-score thresholds: the operating point, by how many frames a
     # track uses. Short tracks need more: three or four single-frame artifacts
@@ -92,6 +116,15 @@ def deg_day_to_px(rate_deg_day: float, scale_arcsec: float) -> float:
     return rate_deg_day * 3600.0 / scale_arcsec
 
 
+def _accel_bound_px(cfg: DetectorConfig, speed_px_day: float, scale_arcsec: float) -> float:
+    """Largest path curvature (px/day^2 per axis) to fit for a track this fast."""
+    if cfg.accel_max_arcsec_day2 <= 0:
+        return 0.0
+    rate = speed_px_day * scale_arcsec / 3600.0
+    return max(cfg.accel_max_arcsec_day2, cfg.accel_per_rate * rate,
+               cfg.accel_per_rate2 * rate * rate) / scale_arcsec
+
+
 def same_track(a: Track, b: Track, times, tol_px: float = 2.0) -> bool:
     xa, ya = a.position(times)
     xb, yb = b.position(times)
@@ -109,8 +142,15 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
         f"({timing['register_s']:.1f}s), outlier px masked per frame: {reg.n_outlier_px}")
 
     t = time.time()
-    pre = preprocess(reg, log=log)
+    pre = preprocess(reg, log=log, local_noise_px=cfg.local_noise_px)
     timing["preprocess_s"] = time.time() - t
+
+    apc = {"apcorr": 1.0}
+    if cfg.aperture_correction:
+        ee = cfg.aperture_ee if cfg.aperture_ee is not None else default_aperture_ee(seq.frames[0])
+        apc = aperture_correction(pre.template, pre.coverage >= min(3, reg.n),
+                                  float(np.median(pre.psf_sigma_px)), ee,
+                                  fallback=default_aperture_correction(seq.frames[0]), log=log)
 
     times = pre.times
     t_ref = 0.5 * (times[0] + times[-1])
@@ -122,7 +162,7 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
              "time_span_h": span * 24.0, "t_ref_mjd": t_ref,
              "noise_alpha": pre.alpha.tolist(), "noise_beta": pre.beta,
              "snr_calibration": pre.calib.tolist(), "n_outlier_px": reg.n_outlier_px,
-             "v_stationary_px_day": v_stationary}
+             "v_stationary_px_day": v_stationary, "aperture_correction": apc}
 
     seeds: List[Track] = []
     if cfg.link:
@@ -131,7 +171,7 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
         tracklets = link(dets, times, t_ref, v_stationary,
                          deg_day_to_px(cfg.link_rate_max, scale),
                          min_detections=cfg.min_detections, sigma_pos=cfg.link_sigma_pos_px,
-                         log=log)
+                         accel_bound=lambda v: _accel_bound_px(cfg, v, scale), log=log)
         seeds += [tl.track for tl in tracklets]
         timing["link_s"] = time.time() - t
         stats.update(n_sources=[len(d) for d in dets], n_tracklets=len(tracklets))
@@ -154,9 +194,17 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
     chosen: List[Track] = []
     if seeds:
         p = np.array([s.params() for s in seeds])
-        num, den = evaluator.bilinear_sums(p[:, 0], p[:, 1], p[:, 2], p[:, 3], t_ref)
+        num, den = evaluator.bilinear_sums(p[:, 0], p[:, 1], p[:, 2], p[:, 3], t_ref,
+                                           p[:, 4], p[:, 5])
         quick = np.array([robust_combine(num[i], den[i], cfg.clip_sigma, cfg.frac_tol,
                                          cfg.min_frames)[0] for i in range(len(seeds))])
+        # The bilinear coverage test is stricter than the exact one near
+        # masked pixels: a seed it sees on too few frames gets the exact
+        # score instead (a 1.7 deg/day mover on 3 frames, exact score 38,
+        # was dropped here).
+        for i in np.flatnonzero(~np.isfinite(quick)):
+            ex = evaluator.score(seeds[i])
+            quick[i] = ex.score if ex is not None else -math.inf
         for i in np.argsort(-quick):
             if len(chosen) >= cfg.n_refine or not math.isfinite(quick[i]):
                 break
@@ -170,7 +218,7 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
     refined: List[TrackScore] = []
     n_inconsistent = 0
     for tr in chosen:
-        r = evaluator.refine(tr)
+        r = evaluator.refine(tr, accel_max=_accel_bound_px(cfg, tr.speed, scale))
         if r is None or r.score < cfg.report_threshold:
             continue
         if r.track.speed < v_stationary or r.n_used < cfg.min_frames:
@@ -187,6 +235,10 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
         r = _release_shared_frames(r, final, evaluator, times)
         if r is not None and r.score >= cfg.report_threshold:
             final.append(r)
+    # Final paths from fully covered frames only (``refit_geometry``).
+    final = [evaluator.refit_geometry(r, accel_max=_accel_bound_px(cfg, r.track.speed, scale))
+             for r in final]
+    final = [r for r in final if r.score >= cfg.report_threshold]
     final.sort(key=lambda r: -r.score)
     timing["refine_s"] = time.time() - t
     log(f"triage + refine: {len(seeds)} seeds -> {len(chosen)} refined -> "
@@ -196,7 +248,7 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
     stats.update(n_seeds=len(seeds), n_refined=len(chosen), n_inconsistent=n_inconsistent,
                  timing=timing,
                  max_score=max((r.score for r in refined), default=None))
-    detections = [to_detection(r, reg, pre, cfg) for r in final]
+    detections = [to_detection(r, reg, pre, cfg, apc["apcorr"]) for r in final]
     return DetectionResult(detections=detections, config=cfg.to_dict(), stats=stats,
                            reg=reg, pre=pre, evaluator=evaluator, t_ref=t_ref)
 
@@ -218,7 +270,8 @@ def _release_shared_frames(r: TrackScore, accepted: List[TrackScore], evaluator:
 
 
 def to_detection(r: TrackScore, reg: Registered, pre: Preprocessed,
-                 cfg: DetectorConfig) -> dict:
+                 cfg: DetectorConfig, apcorr: float = 1.0) -> dict:
+    """Detection record; fluxes are scaled to total flux by ``apcorr``."""
     tr = r.track
     xs, ys = tr.position(pre.times)
     ra, dec = reg.wcs.all_pix2world(xs, ys, 0)
@@ -230,10 +283,10 @@ def to_detection(r: TrackScore, reg: Registered, pre: Preprocessed,
     c2 = SkyCoord(rab * u.deg, decb * u.deg)
     rate = float(c1.separation(c2).deg) / (2 * dt)
     pa = float(c1.position_angle(c2).deg)
-    flux = r.flux
+    flux = r.flux * apcorr
     mag = reg.magzp - 2.5 * math.log10(flux) if (reg.magzp is not None and flux > 0) else None
     frames = []
-    z, ff, fe = r.z, r.frame_flux, r.frame_flux_err
+    z, ff, fe = r.z, r.frame_flux * apcorr, r.frame_flux_err * apcorr
     for k in range(pre.n):
         fx, fy = world2pix(reg.frame_wcs[k], [ra[k]], [dec[k]])
         fh, fw = reg.frame_shapes[k]
@@ -254,6 +307,8 @@ def to_detection(r: TrackScore, reg: Registered, pre: Preprocessed,
         "t_ref_mjd": tr.t_ref, "ra_deg": float(ra0[0]), "dec_deg": float(dec0[0]),
         "rate_deg_day": rate, "rate_arcsec_hr": rate * 150.0, "pa_deg": pa,
         "flux": flux, "mag": mag,
-        "grid_track": {"x0": tr.x0, "y0": tr.y0, "vx_px_day": tr.vx, "vy_px_day": tr.vy},
+        "grid_track": {"x0": tr.x0, "y0": tr.y0, "vx_px_day": tr.vx, "vy_px_day": tr.vy,
+                       "ax_px_day2": tr.ax, "ay_px_day2": tr.ay},
+        "accel_arcsec_day2": [tr.ax * reg.pixel_scale_arcsec, tr.ay * reg.pixel_scale_arcsec],
         "frames": frames,
     }

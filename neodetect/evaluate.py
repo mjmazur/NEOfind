@@ -29,6 +29,7 @@ from typing import Optional
 
 import numpy as np
 
+from . import nullcal
 from .detector import DetectorConfig, detect
 from .io import load_sequence, world2pix
 from .trackfit import Track
@@ -38,14 +39,17 @@ MATCH_TOL_PX = 2.0
 
 
 def truth_track(asteroid: dict, reg, t_ref: float) -> Optional[Track]:
-    """Least-squares linear track on the detector grid through the truth positions."""
+    """Least-squares track on the detector grid through the truth positions:
+    quadratic (real paths curve) when there are enough points, else straight."""
     pts = [p for p in asteroid["frames"] if np.isfinite(p["ra_deg"])]
     t = np.array([p["mjd"] for p in pts]) - t_ref
     x, y = world2pix(reg.wcs, [p["ra_deg"] for p in pts], [p["dec_deg"] for p in pts])
-    a = np.vstack([np.ones_like(t), t]).T
-    (x0, vx), *_ = np.linalg.lstsq(a, x, rcond=None)
-    (y0, vy), *_ = np.linalg.lstsq(a, y, rcond=None)
-    return Track(float(x0), float(y0), float(vx), float(vy), t_ref)
+    cols = [np.ones_like(t), t] + ([0.5 * t * t] if len(t) >= 4 else [])
+    a = np.vstack(cols).T
+    cx, *_ = np.linalg.lstsq(a, x, rcond=None)
+    cy, *_ = np.linalg.lstsq(a, y, rcond=None)
+    acc = (float(cx[2]), float(cy[2])) if len(cx) > 2 else (0.0, 0.0)
+    return Track(float(cx[0]), float(cy[0]), float(cx[1]), float(cy[1]), t_ref, *acc)
 
 
 def match_detection(det: dict, asteroid: dict, scale_arcsec: float,
@@ -173,11 +177,8 @@ def evaluate_sweep(sweep_dir, cfg: DetectorConfig = None, jobs: Optional[int] = 
     return summary
 
 
-FRAME_CLASSES = ("3", "4", "5+")
-
-
-def frame_class(n_used: int) -> str:
-    return "3" if n_used <= 3 else ("4" if n_used == 4 else "5+")
+FRAME_CLASSES = nullcal.FRAME_CLASSES
+frame_class = nullcal.frame_class
 
 
 def summarize(runs, target_far: float = 0.05, name: str = RESULT_NAME) -> dict:
@@ -185,6 +186,7 @@ def summarize(runs, target_far: float = 0.05, name: str = RESULT_NAME) -> dict:
     false-alarm budget, then measure completeness and accuracy with them."""
     null_scores = {c: [] for c in FRAME_CLASSES}
     false_dets, null_max, rows, known_rows = [], [], [], []
+    visit_nulls, visit_false = {}, {}  # per visit (real-data sweeps): see ``nullcal``
     n_ast_runs = 0
     for r in runs:
         path = Path(r["dir"]) / name
@@ -198,11 +200,18 @@ def summarize(runs, target_far: float = 0.05, name: str = RESULT_NAME) -> dict:
             for d in doc["detections"]:
                 null_scores[frame_class(d["n_frames_used"])].append(d["score"])
             null_max.append(max((d["score"] for d in doc["detections"]), default=0.0))
+            if r.get("visit"):
+                visit_nulls.setdefault(r["visit"], []).append(
+                    [(d["score"], d["n_frames_used"]) for d in doc["detections"]])
             continue
         n_ast_runs += 1
         false_dets += [(d["score"], d["n_frames_used"]) for d in unmatched(doc, truth, scale)]
+        if r.get("visit"):
+            visit_false.setdefault(r["visit"], []).append(
+                [(d["score"], d["n_frames_used"]) for d in unmatched(doc, truth, scale)])
         for te in doc["truth_eval"]:
-            (known_rows if te.get("real") else rows).append({"dir": r["dir"], **te})
+            (known_rows if te.get("real") else rows).append(
+                {"dir": r["dir"], "visit": r.get("visit"), **te})
 
     n_null = len(null_max)
     thresholds = np.round(np.arange(5.0, 20.01, 0.25), 2)
@@ -228,14 +237,16 @@ def summarize(runs, target_far: float = 0.05, name: str = RESULT_NAME) -> dict:
         row["found"] = bool(hits)
         row["found_errors"] = max(hits, key=lambda m: m["score"])["errors"] if hits else None
 
-    def table(key, edges):
+    per_visit = _per_visit(visit_nulls, visit_false, usable, target_far)
+
+    def table(key, edges, found="found"):
         out = []
         for lo, hi in zip(edges[:-1], edges[1:]):
-            sel = [row for row in usable if lo <= row[key] < hi]
+            sel = [row for row in usable if lo <= row[key] < hi and found in row]
             if not sel:
                 continue
             out.append({"lo": lo, "hi": hi, "n": len(sel),
-                        "completeness": float(np.mean([row["found"] for row in sel])),
+                        "completeness": float(np.mean([row[found] for row in sel])),
                         "median_ideal_snr": float(np.median([row["ideal_snr"] for row in sel])),
                         "median_measured_at_truth": _median(row["measured_at_truth"] for row in sel)})
         return out
@@ -252,6 +263,9 @@ def summarize(runs, target_far: float = 0.05, name: str = RESULT_NAME) -> dict:
             accuracy[key] = {"median": float(np.median(vals)),
                              "rms": float(np.sqrt(np.mean(vals ** 2))),
                              "p90_abs": float(np.quantile(np.abs(vals), 0.9))}
+    if per_visit:
+        per_visit["completeness_by_mag"] = table("mag", mag_edges, "found_visit")
+        per_visit["completeness_by_rate"] = table("rate_deg_day", rate_edges, "found_visit")
     return {
         "n_null_runs": n_null, "n_asteroid_runs": n_ast_runs, "n_asteroids": len(usable),
         "target_far_per_sequence": target_far, "calibrated_thresholds": calibrated,
@@ -261,7 +275,7 @@ def summarize(runs, target_far: float = 0.05, name: str = RESULT_NAME) -> dict:
         "completeness_by_mag": table("mag", mag_edges),
         "completeness_by_rate": table("rate_deg_day", rate_edges),
         "completeness_by_ideal_snr": table("ideal_snr", snr_edges),
-        "accuracy": accuracy, "asteroids": usable,
+        "accuracy": accuracy, "per_visit": per_visit, "asteroids": usable,
         # Real known objects in injected real data (magnitudes are predictions).
         "known_objects": [{k: row.get(k) for k in ("dir", "id", "mag", "rate_deg_day",
                                                    "n_frames_covered", "ideal_snr",
@@ -269,6 +283,41 @@ def summarize(runs, target_far: float = 0.05, name: str = RESULT_NAME) -> dict:
                                                    "found", "found_errors")}
                           for row in known_usable],
     }
+
+
+def _per_visit(visit_nulls, visit_false, usable, target_far) -> Optional[dict]:
+    """Per-visit thresholds (``nullcal``): ratios calibrated on the scrambled
+    copies with leave-one-out levels, then completeness with each visit's
+    level from all its copies. Marks ``row["found_visit"]``."""
+    cal = nullcal.calibrate_ratios(visit_nulls, target_far)
+    if cal is None:
+        return None
+    ratios = cal["ratios"]
+    visits = {}
+    for v, copies in visit_nulls.items():
+        level = nullcal.null_level([[s for s, _ in c] for c in copies], cal["rank"])
+        thr = nullcal.thresholds(level, ratios)
+        unmatched_n = [sum(nullcal.passes(s, n, thr) for s, n in run)
+                       for run in visit_false.get(v, [])]
+        visits[v] = {"level": level, "thresholds": thr, "n_copies": len(copies),
+                     "unmatched_per_asteroid_run": _mean(unmatched_n)}
+    for row in usable:
+        vis = visits.get(row.get("visit"))
+        if vis is None:
+            continue
+        hits = [m for m in row.get("matches", [])
+                if nullcal.passes(m["score"], m["n_frames_used"], vis["thresholds"])]
+        row["found_visit"] = bool(hits)
+    for v, vis in visits.items():
+        sel = [row["found_visit"] for row in usable if row.get("visit") == v and "found_visit" in row]
+        vis.update(n_asteroids=len(sel), completeness=_mean(sel))
+    return {"rank": cal["rank"], "ratios": ratios, "false_per_null_run": cal["false_per_copy"],
+            "far_curve": cal["far_curve"], "visits": visits}
+
+
+def _mean(values):
+    vals = list(values)
+    return float(np.mean(vals)) if vals else None
 
 
 def _median(values):
