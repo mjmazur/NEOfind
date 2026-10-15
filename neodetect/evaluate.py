@@ -30,7 +30,7 @@ from typing import Optional
 import numpy as np
 
 from .detector import DetectorConfig, detect
-from .io import load_sequence
+from .io import load_sequence, world2pix
 from .trackfit import Track
 
 RESULT_NAME = "detections.json"
@@ -39,9 +39,9 @@ MATCH_TOL_PX = 2.0
 
 def truth_track(asteroid: dict, reg, t_ref: float) -> Optional[Track]:
     """Least-squares linear track on the detector grid through the truth positions."""
-    pts = asteroid["frames"]
+    pts = [p for p in asteroid["frames"] if np.isfinite(p["ra_deg"])]
     t = np.array([p["mjd"] for p in pts]) - t_ref
-    x, y = reg.wcs.all_world2pix([p["ra_deg"] for p in pts], [p["dec_deg"] for p in pts], 0)
+    x, y = world2pix(reg.wcs, [p["ra_deg"] for p in pts], [p["dec_deg"] for p in pts])
     a = np.vstack([np.ones_like(t), t]).T
     (x0, vx), *_ = np.linalg.lstsq(a, x, rcond=None)
     (y0, vy), *_ = np.linalg.lstsq(a, y, rcond=None)
@@ -71,20 +71,23 @@ def match_detection(det: dict, asteroid: dict, scale_arcsec: float,
             "mag_err": (det["mag"] - asteroid["mag"]) if det.get("mag") is not None else None}
 
 
-def truth_eval(seq, result) -> list:
-    if not seq.truth:
+def truth_eval(seq, result, truth: Optional[dict] = None) -> list:
+    truth = truth or seq.truth
+    if not truth:
         return []
     reg, pre, ev = result.reg, result.pre, result.evaluator
     scale = reg.pixel_scale_arcsec
     out = []
-    for a in seq.truth["asteroids"]:
+    for a in truth["asteroids"]:
+        if sum(p["in_frame"] for p in a["frames"]) < 2:
+            continue
         tr = truth_track(a, reg, result.t_ref)
         sc = ev.score(tr)
         num, den = ev.frame_sums(tr)
         # Ideal SNR from truth fluxes (scaled into grid units) and detector weights.
         ideal2 = 0.0
         for k, p in enumerate(a["frames"]):
-            if den[k] > 0 and p["in_frame"]:
+            if den[k] > 0 and p["in_frame"] and p.get("flux_dn"):
                 f = p["flux_dn"] * reg.flux_scale[k]
                 ideal2 += f * f * den[k]
         best, best_err, matches = None, None, []
@@ -96,7 +99,8 @@ def truth_eval(seq, result) -> list:
             if best is None or d["score"] > best:
                 best, best_err = d["score"], err
         out.append({
-            "id": a["id"], "mag": a["mag"], "rate_deg_day": a["rate_deg_day"],
+            "id": a["id"], "real": bool(a.get("real")), "mag": a["mag"],
+            "rate_deg_day": a["rate_deg_day"],
             "n_frames_in_frame": a["n_frames_in_frame"],
             "n_frames_covered": int((den > 0).sum()),
             "ideal_snr": math.sqrt(ideal2),
@@ -125,7 +129,9 @@ def run_one(run_dir, cfg: DetectorConfig = None, force: bool = False,
     result = detect(seq, cfg)
     doc = result.to_dict()
     doc["truth_eval"] = truth_eval(seq, result)
-    out.write_text(json.dumps(doc, indent=1))
+    tmp = out.with_name(out.name + ".part")  # an interrupted run leaves no result
+    tmp.write_text(json.dumps(doc, indent=1))
+    os.replace(tmp, out)
     return doc
 
 
@@ -178,7 +184,7 @@ def summarize(runs, target_far: float = 0.05, name: str = RESULT_NAME) -> dict:
     """Calibrate one threshold per frame-count class, each with a third of the
     false-alarm budget, then measure completeness and accuracy with them."""
     null_scores = {c: [] for c in FRAME_CLASSES}
-    false_dets, null_max, rows = [], [], []
+    false_dets, null_max, rows, known_rows = [], [], [], []
     n_ast_runs = 0
     for r in runs:
         path = Path(r["dir"]) / name
@@ -187,7 +193,8 @@ def summarize(runs, target_far: float = 0.05, name: str = RESULT_NAME) -> dict:
         doc = json.loads(path.read_text())
         truth = json.loads((Path(r["dir"]) / "truth.json").read_text())
         scale = doc["stats"]["pixel_scale_arcsec"]
-        if not truth["asteroids"]:
+        injected = [a for a in truth["asteroids"] if not a.get("real")]
+        if not injected:
             for d in doc["detections"]:
                 null_scores[frame_class(d["n_frames_used"])].append(d["score"])
             null_max.append(max((d["score"] for d in doc["detections"]), default=0.0))
@@ -195,7 +202,7 @@ def summarize(runs, target_far: float = 0.05, name: str = RESULT_NAME) -> dict:
         n_ast_runs += 1
         false_dets += [(d["score"], d["n_frames_used"]) for d in unmatched(doc, truth, scale)]
         for te in doc["truth_eval"]:
-            rows.append({"dir": r["dir"], **te})
+            (known_rows if te.get("real") else rows).append({"dir": r["dir"], **te})
 
     n_null = len(null_max)
     thresholds = np.round(np.arange(5.0, 20.01, 0.25), 2)
@@ -215,7 +222,8 @@ def summarize(runs, target_far: float = 0.05, name: str = RESULT_NAME) -> dict:
     false_ast = sum(passes(s, n) for s, n in false_dets) / max(n_ast_runs, 1)
 
     usable = [row for row in rows if row["n_frames_covered"] >= 3]
-    for row in usable:
+    known_usable = [row for row in known_rows if row["n_frames_covered"] >= 3]
+    for row in usable + known_usable:
         hits = [m for m in row.get("matches", []) if passes(m["score"], m["n_frames_used"])]
         row["found"] = bool(hits)
         row["found_errors"] = max(hits, key=lambda m: m["score"])["errors"] if hits else None
@@ -254,6 +262,12 @@ def summarize(runs, target_far: float = 0.05, name: str = RESULT_NAME) -> dict:
         "completeness_by_rate": table("rate_deg_day", rate_edges),
         "completeness_by_ideal_snr": table("ideal_snr", snr_edges),
         "accuracy": accuracy, "asteroids": usable,
+        # Real known objects in injected real data (magnitudes are predictions).
+        "known_objects": [{k: row.get(k) for k in ("dir", "id", "mag", "rate_deg_day",
+                                                   "n_frames_covered", "ideal_snr",
+                                                   "measured_at_truth", "detection_score",
+                                                   "found", "found_errors")}
+                          for row in known_usable],
     }
 
 

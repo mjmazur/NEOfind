@@ -11,7 +11,7 @@ import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
 
-from .io import Sequence
+from .io import Sequence, world2pix
 from .linking import link
 from .preprocess import Preprocessed, preprocess
 from .register import Registered, register
@@ -235,7 +235,7 @@ def to_detection(r: TrackScore, reg: Registered, pre: Preprocessed,
     frames = []
     z, ff, fe = r.z, r.frame_flux, r.frame_flux_err
     for k in range(pre.n):
-        fx, fy = reg.frame_wcs[k].all_world2pix([ra[k]], [dec[k]], 0)
+        fx, fy = world2pix(reg.frame_wcs[k], [ra[k]], [dec[k]])
         fh, fw = reg.frame_shapes[k]
         frames.append({
             "frame": k, "mjd": float(pre.times[k]), "ra_deg": float(ra[k]),

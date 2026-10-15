@@ -60,12 +60,37 @@ def _config(args) -> DetectorConfig:
 
 def _print_detections(doc):
     print(f"{'#':>3} {'score':>6} {'det':>3} {'used':>4} {'RA (deg)':>10} {'Dec (deg)':>10} "
-          f"{'deg/day':>8} {'PA':>6} {'mag':>6}")
+          f"{'deg/day':>8} {'PA':>6} {'mag':>6}  known")
     for i, d in enumerate(doc["detections"]):
         mag = f"{d['mag']:6.2f}" if d["mag"] is not None else "     -"
         print(f"{i:3d} {d['score']:6.1f} {'yes' if d['detected'] else ' no':>3} "
               f"{d['n_frames_used']:2d}/{d['n_frames_covered']:<2d}{d['ra_deg']:10.5f} "
-              f"{d['dec_deg']:+10.5f} {d['rate_deg_day']:8.3f} {d['pa_deg']:6.1f} {mag}")
+              f"{d['dec_deg']:+10.5f} {d['rate_deg_day']:8.3f} {d['pa_deg']:6.1f} {mag}  "
+              f"{d.get('known') or ''}")
+
+
+def _label_known(doc, known, scale_arcsec):
+    """Name the known object each detection matches, if any."""
+    from .evaluate import match_detection
+    for d in doc["detections"]:
+        for a in known["asteroids"]:
+            if match_detection(d, a, scale_arcsec):
+                d["known"] = a.get("name", a["id"])
+                break
+
+
+def _print_known(doc, known):
+    """Known objects the search could have seen, brightest first."""
+    rows = sorted((k for k in doc.get("known_eval", []) if k["n_frames_covered"] >= 3),
+                  key=lambda k: k["mag"] if k["mag"] == k["mag"] else 99.0)
+    names = {a["id"]: a.get("name", a["id"]) for a in known["asteroids"]}
+    print(f"known objects on >= 3 frames ({known.get('magnitude', '')}):")
+    print(f"  {'name':>18} {'mag':>5} {'deg/day':>7} {'frames':>6} {'@truth':>7} {'detection':>9}")
+    for k in rows[:25]:
+        at = f"{k['measured_at_truth']:7.1f}" if k["measured_at_truth"] is not None else "      -"
+        det = f"{k['detection_score']:9.1f}" if k["detection_score"] is not None else "        -"
+        print(f"  {names.get(k['id'], k['id']):>18} {k['mag']:5.1f} {k['rate_deg_day']:7.3f} "
+              f"{k['n_frames_covered']:6d} {at} {det}")
 
 
 def cmd_detect(args) -> int:
@@ -79,6 +104,9 @@ def cmd_detect(args) -> int:
     doc["frames"] = [{"path": f.path, "mjd": f.mjd} for f in seq.frames]
     if seq.truth:
         doc["truth_eval"] = truth_eval(seq, result)
+    elif seq.known:
+        doc["known_eval"] = truth_eval(seq, result, seq.known)
+        _label_known(doc, seq.known, result.reg.pixel_scale_arcsec)
     if args.output:
         out = Path(args.output)
     elif seq.source:
@@ -90,6 +118,8 @@ def cmd_detect(args) -> int:
     if seq.truth:
         found = [t for t in doc["truth_eval"] if t["detection_score"] is not None]
         print(f"truth: {len(found)}/{len(doc['truth_eval'])} asteroids matched by a candidate")
+    if "known_eval" in doc:
+        _print_known(doc, seq.known)
     print(f"wrote {out}")
     if args.plot:
         from .overlay import plot_detections

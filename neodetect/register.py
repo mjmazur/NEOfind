@@ -7,12 +7,20 @@ cover only part of it (WISE frames drift ~4' per orbit), so every pixel
 carries a per-frame validity flag.
 
 Per frame, in native pixels: subtract a smooth sky, mask sharp outliers
-(cosmic rays, hot pixels), fill masked pixels with a local median so the
-spline prefilter doesn't ring; then resample the image with a cubic spline,
-the variance bilinearly, and mark every grid pixel whose interpolation
-stencil touched a masked or off-frame pixel. Images are scaled to the
-reference frame's photometric zero point so a source has the same flux
-everywhere.
+(cosmic rays, hot pixels), fill masked pixels by normalized Gaussian
+convolution of their good neighbors so the spline prefilter doesn't ring;
+then resample the image with a cubic spline and the variance bilinearly.
+On blank sky a grid sample is invalid only where masked pixels carry more
+than ``MAX_BAD_WEIGHT`` of its bilinear interpolation weight, so a lone bad
+pixel costs only the samples nearest to it. Where the fill is uncertain --
+a masked pixel next to significant signal, e.g. in a star's core -- every
+sample whose cubic stencil touches it is invalid, as the fill error would
+not subtract out. (Invalidating the whole cubic
+stencil instead cost ~45% of every real WISE frame, whose masks flag ~3% of
+pixels, scattered.) The matched filter treats invalid samples as missing
+data, so a source with a bad pixel in its core still counts with reduced
+weight. Images are scaled to the reference frame's photometric zero point
+so a source has the same flux everywhere.
 
 Interpolation smooths the noise (lower per-pixel variance, correlated
 neighbors); ``preprocess`` calibrates matched-filter significance
@@ -31,6 +39,9 @@ from scipy.ndimage import map_coordinates
 from .cosmics import estimate_sky, sharp_outliers
 from .io import Frame, Sequence, default_psf_fwhm_arcsec, robust_sigma
 from .psf import FWHM_TO_SIGMA
+
+MAX_BAD_WEIGHT = 0.25  # bilinear weight of masked native pixels that invalidates a sample
+SIGNAL_NSIG = 3.0  # a masked pixel whose fill exceeds this many sigma is "on a source"
 
 
 @dataclass
@@ -133,6 +144,16 @@ def _prepare_native(f: Frame, psf_sigma_native: float, outlier_nsig: float):
     return resid, sig, bad, n_hits
 
 
+def _fill(img, bad, sigma):
+    """Replace ``bad`` pixels by a Gaussian-weighted mean of the good ones."""
+    good = (~bad).astype(np.float64)
+    num = ndimage.gaussian_filter(np.where(bad, 0.0, img).astype(np.float64), sigma, mode="nearest")
+    den = ndimage.gaussian_filter(good, sigma, mode="nearest")
+    with np.errstate(invalid="ignore", divide="ignore"):
+        fill = np.where(den > 1e-3, num / den, 0.0)
+    return np.where(bad, fill, img).astype(np.float32)
+
+
 def register(seq: Sequence, ref: Optional[int] = None, region=None,
              outlier_nsig: float = 4.0, log=None) -> Registered:
     log = log or (lambda *a: None)
@@ -162,7 +183,8 @@ def register(seq: Sequence, ref: Optional[int] = None, region=None,
 
         resid, sig, bad, n_hits = _prepare_native(f, sig_native, outlier_nsig)
         n_out.append(n_hits)
-        filled = np.where(bad, ndimage.median_filter(np.where(bad, 0.0, resid), size=5), resid)
+        filled = _fill(resid, bad, max(sig_native, 1.0))
+        sig = _fill(sig, bad | ~np.isfinite(sig), max(sig_native, 1.0))
 
         fx, fy = f.wcs.all_world2pix(g_ra, g_dec, 0)
         fh, fw = f.shape
@@ -170,9 +192,10 @@ def register(seq: Sequence, ref: Optional[int] = None, region=None,
         coords = np.array([fy[inside], fx[inside]])
         img = map_coordinates(filled.astype(np.float64), coords, order=3, mode="nearest")
         v = map_coordinates((sig.astype(np.float64)) ** 2, coords, order=1, mode="nearest")
-        # Any masked pixel within the cubic stencil (+-2 px) invalidates the sample.
-        bad_grown = ndimage.binary_dilation(bad, structure=np.ones((3, 3), bool)).astype(np.float32)
-        b = map_coordinates(bad_grown, coords, order=1, mode="nearest") > 0
+        on_source = bad & (np.abs(filled) > SIGNAL_NSIG * sig)
+        strict = ndimage.binary_dilation(on_source, structure=np.ones((3, 3), bool))
+        b = ((map_coordinates(bad.astype(np.float32), coords, order=1, mode="nearest") > MAX_BAD_WEIGHT)
+             | (map_coordinates(strict.astype(np.float32), coords, order=1, mode="nearest") > 0))
 
         ok = np.zeros(gh * gw, bool)
         ok[np.flatnonzero(inside)[~b]] = True

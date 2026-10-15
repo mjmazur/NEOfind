@@ -9,7 +9,8 @@ substituting ``-unc``/``-msk`` and trying the ``.fits``, ``.fits.gz`` and
 image with no companions.
 
 A simulator run directory also provides ``truth.json`` and
-``metadata.json``.
+``metadata.json``; a ``neowise`` visit directory provides ``known.json``
+(known solar-system objects, same format).
 """
 
 import glob
@@ -23,7 +24,7 @@ from typing import List, Optional
 import numpy as np
 from astropy.io import fits
 from astropy.time import Time
-from astropy.wcs import WCS, FITSFixedWarning
+from astropy.wcs import WCS, FITSFixedWarning, NoConvergence
 import warnings
 
 FITS_EXTS = (".fits", ".fits.gz", ".fits.fz", ".fit", ".fts")
@@ -60,6 +61,7 @@ class Sequence:
     truth: Optional[dict] = None
     metadata: Optional[dict] = None
     source: Optional[str] = None
+    known: Optional[dict] = None  # known.json from neowise: real objects, truth format
 
     @property
     def n_frames(self) -> int:
@@ -70,7 +72,27 @@ class Sequence:
         return np.array([f.mjd for f in self.frames])
 
 
-def _read_image(path: Path):
+def world2pix(wcs: WCS, ra, dec):
+    """``wcs.all_world2pix`` (0-based) that never raises. Far outside a frame
+    the SIP distortion polynomial can make the iterative inverse diverge;
+    those points get the linear (no-distortion) inverse, off by a few pixels
+    at most, which is ample for positions that are off the frame anyway."""
+    try:
+        return wcs.all_world2pix(ra, dec, 0)
+    except NoConvergence as e:
+        sol = np.array(e.best_solution, dtype=float)
+        bad = np.zeros(len(sol), bool)
+        for idx in (e.divergent, e.slow_conv):
+            if idx is not None:
+                bad[np.asarray(idx, int)] = True
+        bad |= ~np.all(np.isfinite(sol), axis=1)
+        lx, ly = wcs.wcs_world2pix(np.atleast_1d(ra), np.atleast_1d(dec), 0)
+        sol[bad, 0], sol[bad, 1] = lx[bad], ly[bad]
+        return sol[:, 0], sol[:, 1]
+
+
+def read_image(path: Path):
+    """(data, header) of the first 2-D image HDU (plain, gzip or tile-compressed FITS)."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FITSFixedWarning)
         with fits.open(path, memmap=False) as hdul:
@@ -103,7 +125,7 @@ def observation_mjd(h: fits.Header) -> float:
     half = 0.5 * exptime / 86400.0 if exptime else 0.0
     if "MJD-MID" in h:
         return float(h["MJD-MID"])
-    if "MJD_OBS" in h:  # WISE L1b; treated as mid-exposure (check in milestone 3)
+    if "MJD_OBS" in h:  # WISE L1b: "Obs. midpoint Modified Julian Day"
         return float(h["MJD_OBS"])
     if "MJD-OBS" in h:
         return float(h["MJD-OBS"]) + half
@@ -113,9 +135,18 @@ def observation_mjd(h: fits.Header) -> float:
     raise ValueError("no observation time (MJD-MID, MJD_OBS, MJD-OBS or DATE-OBS) in header")
 
 
+def default_bad_bits(h: fits.Header) -> int:
+    """Mask bits that mark unusable pixels: WISE's definitions for WISE
+    frames (see ``neowise.maskbits``), otherwise any set bit."""
+    if str(h.get("TELESCOP", "")).strip().upper() == "WISE" and not h.get("SIMULATD"):
+        from neowise.maskbits import BAD_BITS
+        return BAD_BITS
+    return -1
+
+
 def load_frame(path, bad_bits: Optional[int] = None) -> Frame:
     path = Path(path)
-    data, h = _read_image(path)
+    data, h = read_image(path)
     data = data.astype(np.float32)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FITSFixedWarning)
@@ -126,13 +157,13 @@ def load_frame(path, bad_bits: Optional[int] = None) -> Frame:
     unc = None
     unc_path = _companion(path, "unc")
     if unc_path is not None:
-        unc = _read_image(unc_path)[0].astype(np.float32)
+        unc = read_image(unc_path)[0].astype(np.float32)
 
     bad = ~np.isfinite(data)
     msk_path = _companion(path, "msk")
     if msk_path is not None:
-        msk = _read_image(msk_path)[0].astype(np.int64)
-        bits = bad_bits if bad_bits is not None else -1  # default: any set bit
+        msk = read_image(msk_path)[0].astype(np.int64)
+        bits = bad_bits if bad_bits is not None else default_bad_bits(h)
         bad |= (msk & bits) != 0
     if unc is not None:
         bad |= ~np.isfinite(unc) | (unc <= 0)
@@ -180,7 +211,7 @@ def load_sequence(inputs, bad_bits: Optional[int] = None) -> Sequence:
     if not paths:
         raise ValueError(f"no FITS images found in {inputs}")
     frames = sorted((load_frame(p, bad_bits) for p in paths), key=lambda f: f.mjd)
-    truth = metadata = None
+    truth = metadata = known = None
     source = None
     if isinstance(inputs, (str, Path)) and Path(inputs).is_dir():
         source = str(inputs)
@@ -188,7 +219,9 @@ def load_sequence(inputs, bad_bits: Optional[int] = None) -> Sequence:
             truth = json.loads((Path(inputs) / "truth.json").read_text())
         if (Path(inputs) / "metadata.json").exists():
             metadata = json.loads((Path(inputs) / "metadata.json").read_text())
-    return Sequence(frames=frames, truth=truth, metadata=metadata, source=source)
+        if (Path(inputs) / "known.json").exists():
+            known = json.loads((Path(inputs) / "known.json").read_text())
+    return Sequence(frames=frames, truth=truth, metadata=metadata, source=source, known=known)
 
 
 def default_psf_fwhm_arcsec(frame: Frame) -> float:

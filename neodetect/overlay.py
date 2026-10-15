@@ -6,6 +6,8 @@ from PIL import Image, ImageDraw
 
 from neosim.preview import display_limits, to_uint8
 
+from .io import world2pix
+
 
 def plot_detections(result, path, truth=None, detected_only: bool = False) -> None:
     pre, reg = result.pre, result.reg
@@ -20,8 +22,8 @@ def plot_detections(result, path, truth=None, detected_only: bool = False) -> No
 
     if truth:
         for a in truth["asteroids"]:
-            x, y = reg.wcs.all_world2pix([p["ra_deg"] for p in a["frames"]],
-                                         [p["dec_deg"] for p in a["frames"]], 0)
+            x, y = world2pix(reg.wcs, [p["ra_deg"] for p in a["frames"]],
+                             [p["dec_deg"] for p in a["frames"]])
             pts = [flip(px, py) for px, py in zip(x, y)]
             draw.line(pts, fill=(80, 160, 255), width=1)
             for px, py in pts:
@@ -31,8 +33,8 @@ def plot_detections(result, path, truth=None, detected_only: bool = False) -> No
         if detected_only and not d["detected"]:
             continue
         color = (255, 60, 60) if d["detected"] else (255, 180, 0)
-        xs, ys = reg.wcs.all_world2pix([f["ra_deg"] for f in d["frames"]],
-                                       [f["dec_deg"] for f in d["frames"]], 0)
+        xs, ys = world2pix(reg.wcs, [f["ra_deg"] for f in d["frames"]],
+                           [f["dec_deg"] for f in d["frames"]])
         pts = [flip(x, y) for x, y, f in zip(xs, ys, d["frames"]) if f["covered"]]
         if len(pts) >= 2:
             draw.line(pts, fill=color, width=1)

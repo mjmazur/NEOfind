@@ -101,10 +101,59 @@ sweep.py, tests/
   Explanatory Supplement when writing `visits.py` and `maskbits.py`.
 - Real-data truth: (a) known asteroids from SkyBoT/sb_ident and MOST, (b)
   injection-recovery of synthetic asteroids in real frames.
+- Learned in M3 (see `neowise/`):
+  - L1b WCS is `SIN-SIP` (distortion up to ~6"); astropy handles it, and
+    IRSA cutouts keep the full header with CRPIX shifted. `MJD_OBS` is the
+    exposure midpoint.
+  - Static bad pixels (~3%: bits 1, 3, 4, 6, 9, 26) are NaN in `-int`.
+    Bits 21 and 28 keep data with 10-15x inflated `-unc`. Bit 27 (co-add
+    temporal outlier) must not be masked: moving objects set it.
+  - `-unc` overestimates the noise by ~1/0.55 in variance; the noise model's
+    alpha absorbs it.
+  - IBE `INTERSECT=OVERLAPS` is generous (cutouts of non-overlapping frames
+    fail with HTTP 500), so overlap is computed from the frame corners. IRSA
+    answers 503 to bursts of more than ~10 parallel requests; cutouts come
+    back gzipped.
+  - SkyBoT ignores observatory code C51 (WISE); positions are shifted from
+    the geocenter to the spacecraft with the header's `ERTH2SC` vector
+    (3.5" for the main belt, much more for NEOs).
+  - Single-exposure PSF: the empirical ePSF agrees with the official
+    cryogenic W1 PSF (Explanatory Supplement IV.4.c) to ~5%: effective FWHM
+    ~2.2 px, NEA ~14.5 px. 4% of the flux lies beyond 8 px.
+  - Each frame also has artifact tables (`-art-w1-{D,H,P}.tbl`: diffraction
+    spikes, halos, latents/persistence) for M4.
 
 ## Status and lessons
 
 - **M1 done** (simulator). **M2 done** (detector on WISE-like simulations).
+  **M3 done**: `neowise` search/download/known objects/ePSF/
+  injection/scrambled nulls. The detector runs on real visits unchanged
+  except for the registration masking (below). Real-data results are in the
+  README: same 50% point (W1 ≈ 15.4) as on simulations, with ~1.7x
+  higher thresholds offset by ~1.8x deeper real frames. Known bright
+  asteroids are recovered at 0.1-0.2 px.
+- Real-data limits found in M3, to address in M4:
+  - Crowded fields (|b| < ~20°) dominate the false-alarm tail. They also
+    saturate the triage cap (`n_refine` = 400), which costs ~20% completeness
+    there. Options: a cap scaled with seed count, or star-subtracted
+    residuals (fewer seeds).
+  - Thresholds from 45 scrambled nulls are set by single events. More
+    scrambles per visit, or per-visit (crowding-dependent) thresholds, would
+    help.
+  - Photometry is 0.14 mag faint: an ePSF aperture correction, or the ePSF
+    itself as the matched filter.
+  - Tracks along cutout edges can fail flux consistency because of
+    edge-pixel outliers.
+  - `all_world2pix` diverges far outside a SIP frame; `io.world2pix` falls
+    back to the linear inverse for those points.
+- Real WISE masks flag ~3% of pixels, scattered. Invalidating each bad
+  pixel's whole cubic stencil (as in M2) lost ~45% of every frame; now bad
+  pixels are filled by normalized convolution and only samples dominated by
+  them are invalid (strict stencil masking only on sources).
+- On real data the whitened SNR tails are heavier than on simulations
+  (P(z>4) ~10x Gaussian): satellite/debris streaks, edge artifacts and
+  noise near masked pixels. False alarms are calibrated on real data with
+  time-scrambled visits (all artifacts, no linear motion).
 - Search losses are negligible: refined detection scores equal the
   statistic at the true track, which tracks the ideal SNR.
 - False alarms are dominated by chance alignments of 3-4 single-frame
@@ -117,7 +166,7 @@ sweep.py, tests/
   (cache-blocked numba kernel, ~30 G adds/s, memory-bandwidth bound).
   Each doubling of the rate range is 4x the work, which is where a GPU
   backend pays off.
-- Open items for M3+: second-pass artifact masking on star-subtracted
+- Open items for M4+: second-pass artifact masking on star-subtracted
   residuals back-projected to native pixels (cosmic rays on bright-star
   wings escape the flat-background sharpness tests; vetting currently
   catches them); real WISE PSF (wings) in both simulator and detector;
