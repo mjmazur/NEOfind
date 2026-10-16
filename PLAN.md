@@ -312,8 +312,31 @@ sweep.py, tests/
       ratios 1.48 / 1.36 / 1.47; per-visit completeness at W1 15–15.5 /
       15.5–16 / 16–16.5 of 0.90 / 0.56 / 0.12 (`real_v1`) and 0.87 / 0.65 /
       0.24 (`real_v2`), before the streak mask's gain.
-  - Next: rerun all three sets with everything, then recalibrate
-    `nullcal.NULL_RATIO` and the fixed thresholds.
+  - `real_v1` with everything (`detections_m4e.json`): v012 no longer sets
+    any ratio (level 7.68, completeness 0.52; its worst held-out false track
+    1.38 × level). Global thresholds 11.5 / 18.0 / 10.25, completeness 0.88
+    / 0.54 / 0.14 at W1 15–15.5 / 15.5–16 / 16–16.5 (m4b: 0.81 / 0.16 /
+    0.00). The 4-frame class was then set by one 17.9 null in v002 (ratio
+    2.48): one z 17 frame plus three on bright stars with little weight,
+    just inside the star-residual test's photon-noise allowance.
+    - Single-frame vetting: reject a track if, without its strongest frame,
+      < 0.6 of the score and < 8 is left. Real asteroids keep 0.66–0.97 of
+      it (n equal frames: sqrt((n-1)/n)); on `real_v1` + `real_v2` it
+      removes 30% of false tracks ≥ 9 and none of 680 injected-asteroid
+      detections, nor Oceana or Lachesis; nothing on simulations.
+    - On the m4e detections (the rule is scale-free, so it applies exactly
+      to saved results): global thresholds 10.0 / 9.25 / 10.25, ratios 1.30
+      / 1.32 / 1.46, completeness 0.95 / 0.68 / 0.14 (global) and 0.93 /
+      0.62 / 0.13 (per visit), 0 false per held-out copy.
+  - Simulated astrometry on realistic paths (`wise_v2`, 127 asteroids found
+    by both fits in 16 runs): curvature fit 0.30" median / 0.49" rms, PA
+    0.17°, vs a straight fit 0.58" / 1.05", 0.23° (paths > 1.5" from a line:
+    0.57" vs 1.70" rms; < 0.5": 0.52" vs 0.48", the noise-fitting cost).
+    The `wise_v1` regression was that cost alone; `wise_v2` is now the
+    simulated astrometry reference.
+  - Next: recalibrate `nullcal.NULL_RATIO` and the fixed thresholds on
+    `real_v1` + `real_v2` (m4e plus single-frame vetting) and fill in the
+    final M4 numbers.
 - Real-data limits found in M3, and what became of them:
   - Crowded fields (|b| < ~20°) dominate the false-alarm tail. They also
     saturate the triage cap (`n_refine` = 400), which costs ~20% completeness

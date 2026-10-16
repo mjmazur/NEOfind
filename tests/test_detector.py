@@ -215,3 +215,22 @@ def test_star_residual_vetting_spares_bright_asteroids():
     assert not _on_star_residuals(track([1600, 1500, 1700, 0], [200, 21, 230, 20]), ref, cfg)
     # A bright asteroid: 2.6x the blank-sky error, all of it its own photon noise.
     assert not _on_star_residuals(track([4000, 4100, 3900, 0], [52, 53, 51, 20]), ref, cfg)
+
+
+def test_single_frame_dominated_tracks_rejected():
+    from types import SimpleNamespace
+    from neodetect.detector import DetectorConfig, _single_frame_dominated
+
+    cfg = DetectorConfig()
+
+    def track(z, err):
+        z, err = np.asarray(z, float), np.asarray(err, float)
+        den = 1.0 / err ** 2
+        return SimpleNamespace(used=np.ones(z.size, bool), num=z * np.sqrt(den), den=den)
+
+    # The 17.9 real-NEOWISE null: one strong frame, three on bright stars.
+    assert _single_frame_dominated(track([17.1, 5.4, 2.7, 1.2], [46, 93, 190, 429]), cfg)
+    # A faint asteroid in 4 equal frames keeps sqrt(3/4) of its score.
+    assert not _single_frame_dominated(track([5.0, 5.0, 5.0, 5.0], [20, 20, 20, 20]), cfg)
+    # A bright one with a dominant frame still has plenty left.
+    assert not _single_frame_dominated(track([40.0, 12.0, 12.0], [20, 20, 20]), cfg)

@@ -70,6 +70,15 @@ class DetectorConfig:
     # (W1 12.5 from three star residuals) had 7.7x. 0 = off.
     star_noise_factor: float = 2.0
     star_noise_k: float = 2.0
+    # Reject tracks whose score rests on one frame: without the strongest
+    # frame less than single_frame_max_frac of the score is left and that
+    # rest is below single_frame_min_rest (a single-frame event plus frames
+    # of little weight, e.g. on bright stars: a 17.9 4-frame null on real
+    # NEOWISE kept 6.2). Real asteroids keep 0.66-0.97 (n equal frames:
+    # sqrt((n-1)/n)); on real_v1 + real_v2 this removed 30% of false tracks
+    # >= 9 and none of 680 injected-asteroid detections. 0 = off.
+    single_frame_max_frac: float = 0.6
+    single_frame_min_rest: float = 8.0
     # Path curvature fitted in refinement, bound per axis by
     # max(accel_max, accel_per_rate * rate, accel_per_rate2 * rate^2) in
     # arcsec/day^2 (rate in deg/day;
@@ -187,6 +196,21 @@ def _on_star_residuals(r: TrackScore, ref_err, cfg) -> bool:
     return bool(np.all(noisy & np.isfinite(ref)))
 
 
+def _single_frame_dominated(r: TrackScore, cfg) -> bool:
+    """True if, without its strongest used frame, the track keeps less than
+    ``single_frame_max_frac`` of its score and that rest is below
+    ``single_frame_min_rest`` (``DetectorConfig.single_frame_*``)."""
+    used = np.flatnonzero(r.used)
+    if used.size < 2:
+        return False
+    num, den = r.num[used], r.den[used]
+    s = num.sum() / math.sqrt(den.sum())
+    keep = np.ones(used.size, bool)
+    keep[int(np.argmax(num))] = False
+    rest = num[keep].sum() / math.sqrt(den[keep].sum())
+    return bool(rest < cfg.single_frame_max_frac * s and rest < cfg.single_frame_min_rest)
+
+
 def _path_extent(track: Track, times) -> float:
     """Largest separation (grid px) between the path's positions at ``times``."""
     x, y = track.position(np.asarray(times))
@@ -299,6 +323,7 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
     refined: List[TrackScore] = []
     n_inconsistent = 0
     n_star_noise = 0
+    n_single_frame = 0
     ref_err = _blank_sky_flux_err(pre)
     for tr in chosen:
         r = evaluator.refine(tr, accel_max=_accel_bound_px(cfg, tr.speed, scale))
@@ -313,6 +338,9 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
             continue
         if cfg.star_noise_factor and _on_star_residuals(r, ref_err, cfg):
             n_star_noise += 1
+            continue
+        if cfg.single_frame_max_frac and _single_frame_dominated(r, cfg):
+            n_single_frame += 1
             continue
         refined.append(r)
     refined.sort(key=lambda r: -r.score)
@@ -335,7 +363,8 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
         f"({timing['triage_s'] + timing['refine_s']:.1f}s)")
 
     stats.update(n_seeds=len(seeds), n_refined=len(chosen), n_inconsistent=n_inconsistent,
-                 n_star_noise=n_star_noise, flux_err_ref=ref_err.tolist(),
+                 n_star_noise=n_star_noise, n_single_frame=n_single_frame,
+                 flux_err_ref=ref_err.tolist(),
                  timing=timing,
                  max_score=max((r.score for r in refined), default=None))
     offsets = [tuple(cfg.centroid_offset) if cfg.centroid_offset is not None
