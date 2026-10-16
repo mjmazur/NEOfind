@@ -227,9 +227,33 @@ sweep.py, tests/
       real WISE 1.1–1.5×).
     The three worst simulated nulls now match M3 (9.9 / 8.1 / 10.8 vs
     7.9 / 7.8 / 10.8). The fast movers stay found (52.8, 38.3).
-  - Pending, in order: `real_v1`, `real_v2` and the simulated `wise_v1`,
-    all with every fix (`detections_m4b.json`). After that, recalibrate `nullcal.NULL_RATIO`
-    and the fixed thresholds.
+  - With every fix (`detections_m4b.json`, commit aac1c79):
+    - Simulated `wise_v1`: thresholds 10.25 / 10.0 / 8.75, completeness
+      0.84 / 0.38 at W1 15–15.5 / 15.5–16, 2–5 deg/day 0.50; position rms
+      0.45" (M2 0.37"), PA rms 0.19° (M2 0.13°) -- still open.
+    - Real data: the curved 3-frame nulls of v012 (27.0, 24.8) are gone, but
+      calibration is now set by slow 5-frame tracks on bright-star residuals
+      in crowded fields: v012 at RA 285.99 Dec −22.70 (17.5, all three
+      scrambles; 19.2 as a 3-frame track before), v003 (11.5, at the
+      curvature bound; 8.4 fitted straight). Local noise lowers both (24.6
+      and 14.8 without it). Fitted ratios became 1.63 / 1.39 / 1.75 and
+      global thresholds 16.75 / 11.0 / 17.5, so per-visit completeness at
+      15.5–16 / 16–16.5 is 0.47 / 0.00 on `real_v1` (0.47 / 0.16 with the
+      old ratios at 0.09 false per null) and 0.57 / 0.06 on `real_v2`
+      (0.62 / 0.26). Photometry −0.009 mag (rms 0.042); position 0.32" rms
+      (`real_v1`), 0.44" (`real_v2`).
+  - Second-pass cosmic-ray masking (`register._second_pass`): the run_0030
+    9.9 null was a cosmic ray on a faint star, which broadened it past the
+    first pass's tests (M3 masked it with Gaussian limits; the
+    star-measured ones were 7% looser). Repeating the tests on frames minus
+    the static sky (median of the registered frames, mapped back to native
+    pixels; noise allowance 10% of the static sky for subtraction errors)
+    catches these hits. The 7 worst simulated nulls go from 11.6 / 10.8 /
+    9.9 / 9.9 / 9.9 / 9.9 / 9.8 to 7.8 / 7.2 / 9.9 / 7.9 / 8.5 / 7.9 / 9.8;
+    Oceana, Lachesis and 33 injections score the same; +2–5 s per visit.
+  - Next: rerun all three sets with the second pass, then recalibrate
+    `nullcal.NULL_RATIO` and the fixed thresholds, deciding how to keep the
+    one v012 artifact from setting them.
 - Real-data limits found in M3, and what became of them:
   - Crowded fields (|b| < ~20°) dominate the false-alarm tail. They also
     saturate the triage cap (`n_refine` = 400), which costs ~20% completeness
@@ -269,10 +293,8 @@ sweep.py, tests/
   frames (2–5, vs 6–8 for real detections), but a cut on that costs too much
   completeness (≥ 4 frames: −32% false alarms, −11% real).
 - Open items for M4+: WISE artifact tables (`-art`: spikes, halos,
-  latents) as masks; a template-depth-dependent threshold; second-pass artifact masking on star-subtracted
-  residuals back-projected to native pixels (cosmic rays on bright-star
-  wings escape the flat-background sharpness tests; vetting currently
-  catches them); real WISE PSF (wings) in both simulator and detector;
+  latents) as masks; a template-depth-dependent threshold; slow tracks on bright-star
+  residuals in crowded fields; real WISE PSF (wings) in both simulator and detector;
   ground-preset PSF matching between frames; trailed templates for fast
   movers in long exposures.
 

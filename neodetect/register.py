@@ -28,6 +28,7 @@ empirically, which absorbs this.
 """
 
 import math
+import warnings
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -40,6 +41,8 @@ from .cosmics import estimate_sky, measured_sharpness, sharp_outliers, star_shar
 from .io import Frame, Sequence, default_psf_fwhm_arcsec, robust_sigma
 from .psf import FWHM_TO_SIGMA
 
+MIN_STATIC_FRAMES = 3  # valid frames needed for the second pass's static-sky estimate
+STATIC_RESID_FRAC = 0.1  # second pass: noise allowance for static-sky subtraction errors
 MAX_BAD_WEIGHT = 0.25  # bilinear weight of masked native pixels that invalidates a sample
 SIGNAL_NSIG = 3.0  # a masked pixel whose fill exceeds this many sigma is "on a source"
 
@@ -157,7 +160,7 @@ def _prepare_native(f: Frame, psf_sigma_native: float, outlier_nsig: float, resi
                           nsig=outlier_nsig, limits=limits)
     n_hits = int(hits.sum())
     bad |= hits
-    return resid, sig, bad, n_hits
+    return resid, sig, bad, n_hits, limits
 
 
 def _fill(img, bad, sigma):
@@ -170,8 +173,50 @@ def _fill(img, bad, sigma):
     return np.where(bad, fill, img).astype(np.float32)
 
 
+def _static_sky(data, valid):
+    """Per-pixel median over valid frames; NaN with fewer than MIN_STATIC_FRAMES."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        med = np.nanmedian(np.where(valid, data, np.nan), axis=0)
+    return np.where(valid.sum(axis=0) >= MIN_STATIC_FRAMES, med, np.nan).astype(np.float32)
+
+
+def _second_pass(f: Frame, grid: WCS, static, scale, psf_sigma_native, outlier_nsig, resid, sig,
+                 bad, limits):
+    """Sharp outliers in ``resid`` minus the static sky (grid, mapped back to
+    native pixels), not already in ``bad``: hits on stars, where the star
+    broadens a cosmic ray enough to pass the first pass's tests. Returns
+    (hit mask, native x, y of the hits on the grid)."""
+    h, w = f.shape
+    yy, xx = np.mgrid[0:h, 0:w]
+    ra, dec = f.wcs.all_pix2world(xx.ravel(), yy.ravel(), 0)
+    gx, gy = grid.all_world2pix(ra, dec, 0)
+    del ra, dec
+    gh, gw = static.shape
+    ok = np.isfinite(static)
+    inside = (gx >= 0) & (gx <= gw - 1) & (gy >= 0) & (gy <= gh - 1)
+    coords = np.array([gy[inside], gx[inside]])
+    tn = np.full(h * w, np.nan)
+    tn[inside] = map_coordinates(np.where(ok, static, 0.0).astype(np.float64), coords, order=3,
+                                 mode="nearest") / scale
+    # Every sample within the cubic stencil of an unknown static sky is unknown.
+    near_nan = map_coordinates(ndimage.binary_dilation(~ok, np.ones((5, 5), bool)).astype(np.float32),
+                               coords, order=0, mode="nearest") > 0
+    tn[np.flatnonzero(inside)[near_nan]] = np.nan
+    tn = tn.reshape(h, w)
+    known = np.isfinite(tn) & ~bad & np.isfinite(sig)
+    diff = np.where(known, resid - np.where(known, tn, 0.0), 0.0).astype(np.float32)
+    # Subtraction errors scale with the static sky (PSF and registration mismatch).
+    noise = np.where(known, np.sqrt(sig.astype(np.float64) ** 2
+                                    + (STATIC_RESID_FRAC * np.where(known, tn, 0.0)) ** 2),
+                     np.inf).astype(np.float32)
+    hits = sharp_outliers(diff, noise, ~known, psf_sigma_native, nsig=outlier_nsig, limits=limits)
+    hits &= ~bad
+    return hits, gx.reshape(h, w)[hits], gy.reshape(h, w)[hits]
+
+
 def register(seq: Sequence, ref: Optional[int] = None, region=None,
-             outlier_nsig: float = 4.0, log=None) -> Registered:
+             outlier_nsig: float = 4.0, second_pass: bool = True, log=None) -> Registered:
     log = log or (lambda *a: None)
     frames = seq.frames
     n = len(frames)
@@ -204,8 +249,11 @@ def register(seq: Sequence, ref: Optional[int] = None, region=None,
 
         resid, sig = natives[k]
         natives[k] = None
-        resid, sig, bad, n_hits = _prepare_native(f, sig_native, outlier_nsig, resid, sig, pooled)
+        resid, sig, bad, n_hits, limits = _prepare_native(f, sig_native, outlier_nsig, resid, sig,
+                                                          pooled)
         n_out.append(n_hits)
+        if second_pass:
+            natives[k] = (resid, sig, bad, limits, sig_native)
         filled = _fill(resid, bad, max(sig_native, 1.0))
         sig = _fill(sig, bad | ~np.isfinite(sig), max(sig_native, 1.0))
 
@@ -232,6 +280,33 @@ def register(seq: Sequence, ref: Optional[int] = None, region=None,
         var[k] = vk.reshape(gh, gw)
         valid[k] = ok.reshape(gh, gw)
         log(f"  frame {k}: {ok.mean():.0%} of grid covered, {n_hits} outlier px masked")
+
+    if second_pass and n >= MIN_STATIC_FRAMES + 1:
+        # Second pass on the static-sky-subtracted frames: a cosmic ray on a
+        # star looks as broad as the star in the first pass. Its grid samples
+        # (every one whose cubic stencil touches a hit) become invalid.
+        static = _static_sky(data, valid)
+        n2 = []
+        for k, f in enumerate(frames):
+            resid, sig, bad, limits, sig_native = natives[k]
+            natives[k] = None
+            hits, hx, hy = _second_pass(f, grid, static, scale[k], sig_native, outlier_nsig,
+                                        resid, sig, bad, limits)
+            n2.append(int(hits.sum()))
+            if not n2[-1]:
+                continue
+            inv = np.zeros((gh, gw), bool)
+            x0, y0 = np.floor(hx).astype(int), np.floor(hy).astype(int)
+            for dy in range(-1, 3):
+                for dx in range(-1, 3):
+                    xi, yi = x0 + dx, y0 + dy
+                    m = (xi >= 0) & (xi < gw) & (yi >= 0) & (yi < gh)
+                    inv[yi[m], xi[m]] = True
+            valid[k] &= ~inv
+            data[k][inv] = 0.0
+            var[k][inv] = 0.0
+            n_out[k] += n2[-1]
+        log(f"  second pass (static sky subtracted): {n2} more outlier px masked")
 
     return Registered(wcs=grid, data=data, var=var, valid=valid, times=seq.times,
                       psf_sigma_px=psf_sigma, flux_scale=scale, magzp=zp_ref,

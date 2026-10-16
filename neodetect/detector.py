@@ -74,6 +74,10 @@ class DetectorConfig:
     # straight vs 40.3 curved).
     accel_min_frames: int = 4
 
+    # Repeat the cosmic-ray tests with the static sky subtracted (``register``):
+    # a hit on a star is as broad as the star in the first pass.
+    sharp_second_pass: bool = True
+
     # Deflate weights where a frame's local SNR scatter exceeds the noise
     # model (scattered light, crowded-field edges; ``preprocess``); 0 = off.
     local_noise_px: int = 31
@@ -158,7 +162,8 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
     log = log or (lambda *a: None)
     timing = {}
     t = time.time()
-    reg = register(seq, ref=cfg.ref_frame, region=cfg.region)
+    reg = register(seq, ref=cfg.ref_frame, region=cfg.region,
+                   second_pass=cfg.sharp_second_pass)
     timing["register_s"] = time.time() - t
     log(f"registered {reg.n} frames onto a {reg.shape[1]}x{reg.shape[0]} grid "
         f"({timing['register_s']:.1f}s), outlier px masked per frame: {reg.n_outlier_px}")

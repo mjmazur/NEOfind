@@ -112,3 +112,55 @@ def test_link_recovers_linear_track_among_noise():
     tr = best.track
     assert tr.x0 == pytest.approx(x0, abs=0.5) and tr.y0 == pytest.approx(y0, abs=0.5)
     assert tr.vx == pytest.approx(vx, rel=0.02) and tr.vy == pytest.approx(vy, rel=0.02)
+
+
+def _star_field_sequence(cr_flux, seed=1):
+    """8 slightly dithered frames of 9 stars (300-30000 DN). Frame 2: a
+    diffused 1.3 px cosmic-ray track on the 949 DN star; frame 3: an asteroid
+    crossing the 533 DN star."""
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    from neodetect.io import Frame, Sequence
+
+    scale, sigma = 2.75, 6.1 / 2.3548 / 2.75
+    rng = np.random.default_rng(seed)
+    stars = [(25 + 30 * (i % 3) + rng.uniform(-.5, .5), 25 + 30 * (i // 3) + rng.uniform(-.5, .5), f)
+             for i, f in enumerate(np.geomspace(300, 30000, 9))]
+    frames = []
+    for k in range(8):
+        dx, dy = 0.37 * k, -0.23 * k
+        img = rng.normal(100.0, 5.0, (120, 120))
+        for x, y, f in stars:
+            _add_psf(img, x + dx, y + dy, f, sigma)
+        if k == 2:
+            x, y, _ = stars[2]
+            for t in (0.25, 0.75):
+                _add_psf(img, x + dx + 0.2 + 1.04 * t, y + dy - 0.1 + 0.78 * t, 0.5 * cr_flux, 0.35)
+        if k == 3:
+            _add_psf(img, stars[1][0] + dx + 0.3, stars[1][1] + dy - 0.2, 300.0, sigma)
+        w = WCS(naxis=2)
+        w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+        w.wcs.crval = [150.0, 10.0]
+        w.wcs.crpix = [60.5 + dx, 60.5 + dy]
+        w.wcs.cd = [[-scale / 3600.0, 0.0], [0.0, scale / 3600.0]]
+        frames.append(Frame(path=f"f{k}", data=img.astype(np.float32),
+                            unc=np.full(img.shape, 5.0, np.float32), bad=np.zeros(img.shape, bool),
+                            wcs=w, mjd=57000.0 + 0.066 * k, exptime=7.7, magzp=20.5,
+                            psf_fwhm_arcsec=6.1, saturate=None, band="W1", header=fits.Header()))
+    return Sequence(frames=frames), stars
+
+
+def test_second_pass_masks_cosmic_ray_on_star_but_not_asteroid():
+    from neodetect.register import register
+
+    seq, stars = _star_field_sequence(200.0)
+    x, y, _ = stars[2]
+    ra, dec = seq.frames[2].wcs.all_pix2world(x + 0.74 + 0.72, y - 0.46 + 0.29, 0)
+    valid = {}
+    for second in (False, True):
+        reg = register(seq, ref=0, second_pass=second)
+        gx, gy = reg.wcs.all_world2pix(ra, dec, 0)
+        valid[second] = bool(reg.valid[2, int(round(float(gy))), int(round(float(gx)))])
+        assert reg.n_outlier_px[3] == 0, "asteroid on a star masked"
+    # The star broadens the hit past the first pass; with the star subtracted it is sharp.
+    assert valid[False] and not valid[True]

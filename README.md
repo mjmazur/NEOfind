@@ -104,7 +104,10 @@ Pipeline:
    cores are (frames with too few stars use the visit's median). Masked
    neighbours are left out of the comparisons. With Gaussian limits the
    tests masked parts of the bright asteroid (120) Lachesis in 4 of 12
-   frames.
+   frames. A second pass repeats the tests with the static sky (per-pixel
+   median of the registered frames, mapped back to native pixels)
+   subtracted: a cosmic ray on a star is as broad as the star in the first
+   pass, and these hits set the top of the simulated false-alarm tail.
 2. **Registration** (`register.py`): resample every frame (cubic spline)
    onto one TAN grid covering the union of footprints, scaled to a common
    zero point; per-frame validity tracks partial coverage. Masked pixels are
