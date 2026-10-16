@@ -163,7 +163,11 @@ Pipeline:
 6. **Vetting** (`detector.py`): paths moving less than 4 PSF FWHM over the
    visit are rejected (the largest separation of the path's positions, so
    curvature counts; 0.005 deg/day over a 33 h NEOWISE visit, while the
-   slowest of 87 known asteroids in our visits moves 0.084); per-frame
+   slowest of 87 known asteroids in our visits moves 0.084); tracks on
+   bright-star residuals in every frame they use are rejected (each used
+   frame's flux error > 2× its blank-sky error, with more extra variance
+   than the track's own photon noise explains; bright asteroids like
+   Oceana are 2.6× from their own noise and stay); per-frame
    fluxes must be consistent with one source (χ² p ≥ 1e-3, allowing 35%
    variability); a frame already claimed by a stronger track is released.
    Detection thresholds depend on how many frames a track uses (short

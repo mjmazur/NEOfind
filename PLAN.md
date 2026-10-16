@@ -292,8 +292,28 @@ sweep.py, tests/
     16–16.5 of 0.53 / 0.10 on `real_v1` (0.47 / 0.00) and 0.65 / 0.23 on
     `real_v2` (0.57 / 0.06), 0 false per held-out copy; the veto cost 1 and
     3 injections.
-  - Next: rerun all three sets with streak mask, veto and path cut, then
-    recalibrate `nullcal.NULL_RATIO` and the fixed thresholds.
+  - v012 with streak mask, veto and path cut (`detections_m4d.json`): null
+    level 10.2 → 7.75, injections found at per-visit thresholds 13 → 17 of
+    33. Two kinds of false track remained: a 13.5 4-frame track in one copy
+    at the streak spot (the other copies have only 7.0-7.1 there, below the
+    veto bar), and a 14.2 3-frame track in the real frame order (both
+    injection runs) whose three frames all sit on bright stars -- W1 12.5
+    with z ~8 per frame, nothing in the two masked frames on its path.
+    - Star-residual vetting: reject a track if every used frame's flux
+      error is > 2× the frame's blank-sky error with more extra variance
+      than the track's own photon noise (> 2 × flux). On the m4b detections
+      it flags 24% of scrambled-copy and 28% of other false tracks ≥ 9 and
+      none of 679 injected-asteroid detections (`real_v1` + `real_v2`), nor
+      Oceana or Lachesis (2.6× from their own noise); never on simulations.
+      Removes the 13.5, the 10.6 and the 14.2 above.
+    - Veto settings re-checked (score bar 0.8-1.2 × level, radius 20-60"):
+      1.2 × level within 60" is best; lower bars veto 7-19 asteroids.
+    - Estimated on m4b with path cut, star-residual vetting and veto:
+      ratios 1.48 / 1.36 / 1.47; per-visit completeness at W1 15–15.5 /
+      15.5–16 / 16–16.5 of 0.90 / 0.56 / 0.12 (`real_v1`) and 0.87 / 0.65 /
+      0.24 (`real_v2`), before the streak mask's gain.
+  - Next: rerun all three sets with everything, then recalibrate
+    `nullcal.NULL_RATIO` and the fixed thresholds.
 - Real-data limits found in M3, and what became of them:
   - Crowded fields (|b| < ~20°) dominate the false-alarm tail. They also
     saturate the triage cap (`n_refine` = 400), which costs ~20% completeness

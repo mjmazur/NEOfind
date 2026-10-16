@@ -59,6 +59,17 @@ class DetectorConfig:
     # deg/day); the slowest of 87 known asteroids in those visits moved 0.084.
     min_path_fwhm: float = 4.0
     min_consistency_p: float = 1e-3  # reject tracks whose per-frame fluxes disagree
+    # Reject tracks lying on bright-star subtraction residuals in every frame
+    # they use: each used frame's flux error > star_noise_factor x the frame's
+    # blank-sky error, with more extra variance than the track's own photon
+    # noise could add (> star_noise_k x flux, grid flux units; a bright
+    # asteroid's own noise is ~0.4 x flux on WISE W1). On real NEOWISE this
+    # removed 24% of scrambled-copy and 28% of other false tracks >= 9 and
+    # none of 679 injected-asteroid detections, nor Oceana or Lachesis (whose
+    # own noise makes them 2.6x the blank-sky error); a v012 false track
+    # (W1 12.5 from three star residuals) had 7.7x. 0 = off.
+    star_noise_factor: float = 2.0
+    star_noise_k: float = 2.0
     # Path curvature fitted in refinement, bound per axis by
     # max(accel_max, accel_per_rate * rate, accel_per_rate2 * rate^2) in
     # arcsec/day^2 (rate in deg/day;
@@ -148,6 +159,32 @@ def _accel_bound_px(cfg: DetectorConfig, speed_px_day: float, scale_arcsec: floa
     rate = speed_px_day * scale_arcsec / 3600.0
     return max(cfg.accel_max_arcsec_day2, cfg.accel_per_rate * rate,
                cfg.accel_per_rate2 * rate * rate) / scale_arcsec
+
+
+def _blank_sky_flux_err(pre) -> np.ndarray:
+    """Per frame, the median PSF-fit flux error over usable positions
+    (grid flux units): mostly blank sky."""
+    out = np.full(pre.n, np.nan)
+    for k in range(pre.n):
+        f = pre.phi[k][::4, ::4]
+        f = f[f > 0]
+        if f.size:
+            out[k] = float(np.median(1.0 / np.sqrt(f)))
+    return out
+
+
+def _on_star_residuals(r: TrackScore, ref_err, cfg) -> bool:
+    """True if every used frame's flux error is > ``star_noise_factor`` x
+    its blank-sky error with more extra variance than the track's own photon
+    noise explains (``DetectorConfig.star_noise_*``)."""
+    used = np.flatnonzero(r.used)
+    if not used.size:
+        return False
+    err = r.frame_flux_err[used]
+    flux = r.frame_flux[used]
+    ref = ref_err[used]
+    noisy = (err > cfg.star_noise_factor * ref) & (err ** 2 - ref ** 2 > cfg.star_noise_k * np.maximum(flux, 0.0))
+    return bool(np.all(noisy & np.isfinite(ref)))
 
 
 def _path_extent(track: Track, times) -> float:
@@ -261,6 +298,8 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
     t = time.time()
     refined: List[TrackScore] = []
     n_inconsistent = 0
+    n_star_noise = 0
+    ref_err = _blank_sky_flux_err(pre)
     for tr in chosen:
         r = evaluator.refine(tr, accel_max=_accel_bound_px(cfg, tr.speed, scale))
         if r is not None and r.n_used < cfg.accel_min_frames and (r.track.ax or r.track.ay):
@@ -271,6 +310,9 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
             continue
         if r.consistency_p(cfg.frac_tol) < cfg.min_consistency_p:
             n_inconsistent += 1
+            continue
+        if cfg.star_noise_factor and _on_star_residuals(r, ref_err, cfg):
+            n_star_noise += 1
             continue
         refined.append(r)
     refined.sort(key=lambda r: -r.score)
@@ -293,6 +335,7 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
         f"({timing['triage_s'] + timing['refine_s']:.1f}s)")
 
     stats.update(n_seeds=len(seeds), n_refined=len(chosen), n_inconsistent=n_inconsistent,
+                 n_star_noise=n_star_noise, flux_err_ref=ref_err.tolist(),
                  timing=timing,
                  max_score=max((r.score for r in refined), default=None))
     offsets = [tuple(cfg.centroid_offset) if cfg.centroid_offset is not None

@@ -195,3 +195,23 @@ def test_path_extent_counts_curvature():
     curved = Track(0.0, 0.0, 0.0, 0.0, 0.5, ax=24.0, ay=0.0)
     assert abs(_path_extent(straight, times) - 3.0) < 1e-9
     assert abs(_path_extent(curved, times) - 3.0) < 1e-9  # 0.5 * 24 * 0.5^2 each way: 0 to 3
+
+
+def test_star_residual_vetting_spares_bright_asteroids():
+    from types import SimpleNamespace
+    from neodetect.detector import DetectorConfig, _on_star_residuals
+
+    cfg = DetectorConfig()
+    ref = np.full(4, 20.0)
+
+    def track(flux, err):
+        f, e = np.asarray(flux, float), np.asarray(err, float)
+        return SimpleNamespace(used=np.array([True, True, True, False]),
+                               frame_flux=f, frame_flux_err=e)
+
+    # Star residuals: noisy in every used frame, far beyond the track's own noise.
+    assert _on_star_residuals(track([1600, 1500, 1700, 0], [200, 210, 230, 20]), ref, cfg)
+    # One clean frame keeps it.
+    assert not _on_star_residuals(track([1600, 1500, 1700, 0], [200, 21, 230, 20]), ref, cfg)
+    # A bright asteroid: 2.6x the blank-sky error, all of it its own photon noise.
+    assert not _on_star_residuals(track([4000, 4100, 3900, 0], [52, 53, 51, 20]), ref, cfg)
