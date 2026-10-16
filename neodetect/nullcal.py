@@ -18,9 +18,13 @@ class ``c``
 with the ratios calibrated on a sweep (``calibrate_ratios``) so that the
 false-alarm rate on held-out scrambled copies -- each scored with the level
 measured on the *other* copies of its visit, so the level's own noise is
-included -- meets the target. On real NEOWISE (``sims/real_v1``) this
-raised completeness at W1 15.5-16 from 0.38 to 0.50 at the same false-alarm
-rate, with thresholds for >= 5 frames from 9.5 (clean visits) to 20.
+included -- meets the target. On real NEOWISE (``sims/real_v1``) with the
+early M4 detector this raised completeness at W1 15.5-16 from 0.38 to 0.50
+at the same false-alarm rate, with thresholds for >= 5 frames from 9.5
+(clean visits) to 20. The final M4 detector's artifact handling (streak
+mask, veto, star-residual and single-frame vetting) evens the visits out
+(levels 6.7-8.2, >= 5-frame thresholds 9.8-11.9), and per-visit and global
+thresholds then perform alike (0.62 vs 0.68 at W1 15.5-16).
 
 In production ``self_calibrate`` scrambles the frame times of the sequence
 being searched, runs the detector on the copies, and returns the thresholds
@@ -45,11 +49,12 @@ import numpy as np
 
 FRAME_CLASSES = ("3", "4", "5+")
 NULL_RANK = 5
-# Calibrated on real NEOWISE W1 single exposures (sims/real_v1 with the M4
-# detector, 15 visits x 3 scrambled copies, <= 0.05 false detections per
-# visit). Recalibrate with ``neodetect evaluate`` (``per_visit.ratios``)
-# after detector changes.
-NULL_RATIO = {"3": 1.81, "4": 1.53, "5+": 1.39}
+# Calibrated on real NEOWISE W1 single exposures (sims/real_v1 with the
+# final M4 detector incl. streak mask, artifact veto and single-frame
+# vetting; 15 visits x 3 scrambled copies, held-out copies, <= 0.05 false
+# detections per visit: 0 found). Recalibrate with ``neodetect evaluate``
+# (``per_visit.ratios``) after detector changes.
+NULL_RATIO = {"3": 1.30, "4": 1.32, "5+": 1.46}
 VETO_RADIUS_ARCSEC = 60.0
 VETO_MIN_RATIO = 1.2
 

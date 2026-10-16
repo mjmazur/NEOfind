@@ -335,9 +335,31 @@ sweep.py, tests/
     the noise-fitting cost).
     The `wise_v1` regression was that cost alone; `wise_v2` is now the
     simulated astrometry reference.
-  - Next: recalibrate `nullcal.NULL_RATIO` and the fixed thresholds on
-    `real_v1` + `real_v2` (m4e plus single-frame vetting) and fill in the
-    final M4 numbers.
+  - Final M4 numbers (`evaluation_m4f.json`: m4e detections plus
+    single-frame vetting, applied to the saved results; `real_v2` shares
+    `real_v1`'s null runs):
+    - `nullcal.NULL_RATIO` 1.81 / 1.53 / 1.39 → 1.30 / 1.32 / 1.46 (held-out
+      false 0, veto lost 0 asteroids). Default fixed thresholds (simulated)
+      10.25 / 9.5 / 8.25 → 9.0 / 9.25 / 8.75.
+    - Real (`real_v1` / `real_v2`): global thresholds 10.0 / 9.25 / 10.25,
+      completeness at W1 15–15.5 / 15.5–16 / 16–16.5 of 0.95 / 0.68 / 0.14
+      and 0.94 / 0.73 / 0.30 (M3: 0.79 / 0.37 / 0.01); 50% point W1 ≈ 15.9
+      (M3 15.4). Per visit 0.93 / 0.62 / 0.13: with the artifacts handled
+      the visits are alike (levels 6.7–8.2) and per-visit thresholds no
+      longer beat global ones. Position 0.39" / 0.58" rms, magnitudes
+      −0.01 ± 0.05–0.07. (2882) now found.
+    - Unmatched detections in injected runs: 0.10–0.17 per visit, above the
+      0.05 met on held-out scrambled copies -- each visit's real frame
+      order is an extra draw of chance alignments (v012: a 10.9 3-frame
+      track on two bright-star wings and one faint source).
+    - Simulated: thresholds 9.0 / 9.25 / 8.75, completeness 0.88 / 0.40 /
+      0.02 (`wise_v1`), 0.90 / 0.33 / 0.02 (`wise_v2`, orbits); 50% point
+      W1 ≈ 15.6; 0.47" rms on orbit paths.
+  - Open from M4: a threshold that depends on template depth (crowded
+    fields; would address the real-order false alarms); whether to keep
+    per-visit thresholds on by default now that they no longer gain
+    (they cost two extra detector runs per visit); bright fast movers in
+    `real_v2` (0.93–0.96 at W1 14–15).
 - Real-data limits found in M3, and what became of them:
   - Crowded fields (|b| < ~20°) dominate the false-alarm tail. They also
     saturate the triage cap (`n_refine` = 400), which costs ~20% completeness

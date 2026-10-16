@@ -125,9 +125,12 @@ class DetectorConfig:
     # (cosmic rays that look PSF-like) align by chance far more often than
     # five or more. Calibrate on asteroid-free runs with ``neodetect
     # evaluate``. Candidates above ``report_threshold`` are kept for diagnostics.
-    detect_threshold: float = 8.25  # tracks using >= 5 frames
-    detect_threshold_4: float = 9.5
-    detect_threshold_3: float = 10.25
+    # Defaults: simulated WISE W1 (sims/sweeps/wise_v1, final M4 detector,
+    # 72 null runs, 0.04 false per run). Real WISE frames use per-visit
+    # thresholds (``nullcal``) instead.
+    detect_threshold: float = 8.75  # tracks using >= 5 frames
+    detect_threshold_4: float = 9.25
+    detect_threshold_3: float = 9.0
     report_threshold: float = 5.0
 
     threads: int = 0  # 0 = all cores

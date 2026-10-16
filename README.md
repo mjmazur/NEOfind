@@ -193,7 +193,7 @@ varies far more between visits than one global threshold can follow. So
 `detect` runs the detector on time-scrambled copies of the visit
 (`--null-scrambles N`, default 2 on real WISE frames, 0 = off). The visit's
 *null level* is the median over copies of the 5th-highest candidate score.
-The thresholds are that level × 1.81 / 1.53 / 1.39 for 3 / 4 / ≥5-frame
+The thresholds are that level × 1.30 / 1.32 / 1.46 for 3 / 4 / ≥5-frame
 tracks (`--null-ratio`). The factors are calibrated on `sims/real_v1` so
 that held-out scrambled copies give ≤ 0.05 false detections per visit.
 Each copy costs one detector run. The copies also give an **artifact
@@ -228,85 +228,93 @@ holding out each copy, and reports completeness with per-visit thresholds.
 `sims/sweeps/wise_v1`: 24 runs with 12 asteroids each (W1 13.5–16.5,
 0.05–3 deg/day; 286 covered by ≥ 3 frames) and 72 null runs, default
 `wise-w1` preset (5σ single-frame depth 15.3, ~130 unflagged cosmic rays
-per frame). The calibrated thresholds (3 / 4 / ≥5 frames: 10.25 / 9.5 /
-8.25) are the defaults. They give 0.04 false detections per null run.
+per frame). `sims/sweeps/wise_v2` is the same runs (same seeds) with
+asteroids on two-body orbits (`--motion orbit`), so their paths curve as
+real ones do; it shares the null runs. The calibrated thresholds (3 / 4 /
+≥5 frames: 9.0 / 9.25 / 8.75) are the defaults. They give 0.04 false
+detections per null run. Final M4 detector:
 
 | W1 mag | 13.5–15.0 | 15.0–15.5 | 15.5–16.0 | 16.0–16.5 |
 |---|---|---|---|---|
-| completeness | 1.00 | 0.82 | 0.40 | 0.04 |
-| median ideal stacked SNR | 21–48 | 13.1 | 8.4 | 5.6 |
+| completeness, straight paths (`wise_v1`) | 1.00 | 0.88 | 0.40 | 0.02 |
+| completeness, orbits (`wise_v2`) | 0.98 | 0.90 | 0.33 | 0.02 |
+| median ideal stacked SNR | 22–48 | 13.2 | 8.6 | 5.6 |
 
-So the 50% point is at W1 ≈ 15.4–15.5, i.e. a stacked SNR of about 9. The
-search goes about as deep as the single-frame limit while also using many
-frames. By rate, completeness is 0.65–0.85 with no clear trend up to 2
-deg/day (each bin mixes magnitudes). The 2–5 deg/day bin reaches 0.55;
-fast movers cross the field in fewer frames. Accuracy for detected
-objects is 0.37″ rms in position (0.13 px), 0.2% in rate, 0.13° in position
-angle, and 0.07 mag. Per 12-frame sequence, the linker takes seconds; the
-shift-and-stack up to 0.25 deg/day takes ~40 s on 32 cores; the full
-evaluation (96 runs, `-j 4`) takes ~1.5 h.
+So the 50% point is at W1 ≈ 15.6, a stacked SNR of about 9: the search
+goes about as deep as the single-frame limit while using many frames. By
+rate, completeness is 0.65–0.9 up to 2 deg/day and 0.5–0.55 at 2–5
+deg/day (fast movers cross the field in fewer frames).
+
+Accuracy on orbit paths (`wise_v2`): 0.29″ median, 0.47″ rms in position,
+0.6% in rate, 0.20° in position angle, 0.08 mag rms. Fitting curvature is
+what makes that possible: on the 189 asteroids found by both, a straight
+fit gives 0.99″ rms (1.67″ for paths > 1.5″ from a line) against 0.45″.
+On the straight `wise_v1` paths the fit only costs (0.45″ rms against
+0.37″ in M2), which is why `wise_v2` is the reference. Per 12-frame
+sequence, the linker takes seconds; the shift-and-stack up to 0.25
+deg/day takes ~40 s on 32 cores; the full evaluation (96 runs, `-j 4`)
+takes ~1.5 h.
 
 ### Measured performance (real NEOWISE W1)
 
 `sims/real_v1`: 15 NEOWISE-R visits along the ecliptic (0.5° cutouts,
 11–18 frames each, 2014–2015). Each visit has 2 injected copies (20
 asteroids each, W1 13.5–17, 0.05–3 deg/day; 489 covered by ≥ 3 frames) and
-3 time-scrambled copies (45 null runs). The detector runs with its default
-settings; the thresholds below are calibrated on the scrambled nulls. The
-numbers are from the M4 detector with aperture correction and
-`n_refine` = 2000 (`evaluation_m4.json`), before local noise and
-acceleration fitting. Results with those, and with curved injected paths
-(`sims/real_v2`), are pending.
+3 time-scrambled copies (45 null runs). `sims/real_v2` injects on two-body
+orbits seen from WISE (curved paths, 491 covered) and shares the null
+runs. The detector runs with its default settings; the thresholds below
+are calibrated on the scrambled nulls. Final M4 detector
+(`evaluation_m4f.json`):
 
-| | simulated (`wise_v1`) | real (`real_v1`) |
-|---|---|---|
-| thresholds 3 / 4 / ≥5 frames | 10.25 / 9.5 / 8.25 | 20 / 16.75 / 13.75 |
-| false detections per null run | 0.04 | 0.04 |
-| completeness W1 14.5–15.0 | 1.00 | 0.94 |
-| completeness W1 15.0–15.5 | 0.82 | 0.79 |
-| completeness W1 15.5–16.0 | 0.40 | 0.37 |
-| completeness W1 16.0–16.5 | 0.04 | 0.01 |
-| median ideal SNR at W1 15.0–15.5 | 13.2 | 23.8 |
+| | simulated (`wise_v1`) | real (`real_v1`) | real, orbits (`real_v2`) |
+|---|---|---|---|
+| global thresholds 3 / 4 / ≥5 frames | 9.0 / 9.25 / 8.75 | 10.0 / 9.25 / 10.25 | same |
+| false detections per null run | 0.04 | 0.00 | 0.00 |
+| unmatched detections per injected run | 0.04 | 0.17 | 0.10 |
+| completeness W1 14.5–15.0 | 1.00 | 1.00 | 0.93 |
+| completeness W1 15.0–15.5 | 0.88 | 0.95 | 0.94 |
+| completeness W1 15.5–16.0 | 0.40 | 0.68 | 0.73 |
+| completeness W1 16.0–16.5 | 0.02 | 0.14 | 0.30 |
+| median ideal SNR at W1 15.5–16.0 | 8.6 | 14.4 | 15.1 |
 
-The 50% point is the same, W1 ≈ 15.4, but for different reasons. Real
-frames are deeper than the `wise-w1` preset, which gives ~1.8× the SNR at
-a given magnitude. Their false-alarm tail is heavier, so the thresholds are
-~1.7× higher. On real data the 50% point is at a stacked SNR of ~17, not 9.
+The 50% point is W1 ≈ 15.9 on real data, against 15.6 simulated: real
+frames are deeper than the `wise-w1` preset (~1.7× the SNR at a given
+magnitude), and with the artifact handling below the real thresholds are
+only ~1.1× the simulated ones. At M3 they were ~2× (20 / 16.75 / 13.75)
+and the real 50% point was W1 ≈ 15.4.
 
-- **What sets the real thresholds:** chance alignments of real sources and
-  artifacts in the crowded low-galactic-latitude visits (v002 in Taurus,
-  v010–v013 toward the bulge). Every null-run score above 17 comes from
-  v012. With 45 nulls, the 3-frame threshold is set by a single event;
-  20 is the top of the calibration grid.
-- **Crowded fields also lose completeness.** Completeness at W1 14.5–15.5
-  is 0.73 in the five crowded visits, against 0.92 elsewhere. Those visits
-  hit the M3 triage cap (`n_refine` = 400). Raising it to 2000 (the M4
-  default) roughly doubles their refine time but didn't change completeness
-  overall; the per-visit thresholds do help (0.80).
+- **What set the real thresholds, and what fixed it:** scattered-light
+  streaks from a bright star just past a cutout edge in the bulge visit
+  v012, which line up into slow tracks in every scrambled copy (streak
+  mask, artifact veto); slow tracks on bright-star residuals (stationary
+  test on the path's extent, star-residual vetting); and tracks resting on
+  one frame (single-frame vetting). Each check removes none of the 680
+  injected-asteroid detections tested.
+- **Unmatched detections in injected runs** (0.10–0.17 per visit) are
+  above the 0.05 target met on the held-out scrambled copies: each
+  visit's real frame order is one more independent draw of chance
+  alignments, which no scrambled copy reproduces by position. In v012 a
+  10.9 3-frame track in the real order sits on two bright-star wings and
+  one faint source.
+- **Per-visit thresholds** (default on real WISE): with the artifacts
+  handled, visits are alike (null levels 6.7–8.2, ≥5-frame thresholds
+  9.8–11.9), and per-visit and global thresholds perform about the same:
+  0.93 / 0.62 / 0.13 per visit vs 0.95 / 0.68 / 0.14 global at W1
+  15–15.5 / 15.5–16 / 16–16.5 (`real_v1`).
+- **Curved injections** (`real_v2`) are found as well as straight ones at
+  W1 ≥ 15; the bright, fast ones (W1 14–15) at 0.93–0.96, against 1.00:
+  close, fast movers cross a cutout in few frames.
 - **Known asteroids:** (224) Oceana and (120) Lachesis (W1 ≈ 11.7–11.8) are
-  found in every copy at score 200–250, with positions within 0.1–0.2 px
-  of the parallax-corrected SkyBoT ephemeris. The fainter known objects
-  are below the thresholds above. One exception: (2882), at a stacked SNR
-  of 14, is missed because its track runs along the cutout edge, where an
-  edge-pixel outlier fails the flux-consistency test.
-- **Accuracy:** 0.30″ rms in position, 0.2% in rate, 0.09° in position
-  angle, 0.04 mag rms in magnitude (bias −0.01). Before the aperture
-  correction (M3) magnitudes were 0.14 mag too faint. By rate, completeness falls from 0.7 below
-  0.25 deg/day to 0.2–0.5 above, mostly because fast movers cross a 0.5°
-  cutout in fewer frames.
-- **Per-visit thresholds**, same detections, same false-alarm rate:
-
-  | W1 mag | 14.5–15.0 | 15.0–15.5 | 15.5–16.0 | 16.0–16.5 |
-  |---|---|---|---|---|
-  | global thresholds | 0.94 | 0.79 | 0.37 | 0.01 |
-  | per-visit thresholds | 0.96 | 0.90 | 0.50 | 0.19 |
-
-  The ≥5-frame threshold ranges from 9.5 on clean visits to 20.6 on the
-  bulge visit v012. The 50% point moves to W1 ≈ 15.5–15.6. A single
-  scrambled copy is noisy: four copies of the Oceana visit gave levels of
-  7.7–8.4, hence the default of two.
-- **Cost:** ~3–6 min per visit on 32 cores. The full sweep (75 runs, `-j 4`)
-  takes ~5 h.
+  found in every copy at score 236–264, within 0.1–0.2 px of the
+  parallax-corrected SkyBoT ephemeris. (2882), at a stacked SNR of 12, is
+  now found too (11.3); M3 lost it to an edge-pixel outlier.
+- **Accuracy:** 0.27″ median / 0.39″ rms in position on `real_v1`, 0.32″ /
+  0.58″ on the curved `real_v2`; 0.3–0.6% in rate; 0.17–0.28° in position
+  angle; magnitudes −0.01 mag biased, 0.05–0.07 mag rms (aperture
+  correction; M3 was 0.14 mag faint).
+- **Cost:** ~3–6 min per visit on 32 cores, plus one run per scrambled
+  copy for per-visit thresholds. The full sweep (75 runs, `-j 4`) takes
+  ~5 h.
 
 ## WISE/NEOWISE data (`neowise`)
 
