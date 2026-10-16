@@ -355,8 +355,24 @@ sweep.py, tests/
     - Simulated: thresholds 9.0 / 9.25 / 8.75, completeness 0.88 / 0.40 /
       0.02 (`wise_v1`), 0.90 / 0.33 / 0.02 (`wise_v2`, orbits); 50% point
       W1 ≈ 15.6; 0.47" rms on orbit paths.
-  - Open from M4: a threshold that depends on template depth (crowded
-    fields; would address the real-order false alarms); whether to keep
+  - Template-depth threshold, examined: the false tracks' template depth
+    (other valid frames at their positions, minimum over used frames) is
+    lower than real asteroids' (median 4 vs 6; ≤ 4 for 57-67% vs 21%).
+    Scaling scores by 1 + a·max(0, d0 − depth) and recalibrating beats a
+    uniform threshold raise only slightly (at 0 unmatched: 0.57 / 0.12 vs
+    0.57 / 0.07 at W1 15.5–16 / 16–16.5 on `real_v1`), and the "excess"
+    it targets was mostly not real-order false alarms: of the unmatched
+    detections in injected runs only one event (v012, 10.9) is in the real
+    frame order -- counted in all four of its injected runs -- and the rest
+    each borrowed one frame from an injected asteroid, 1.4–6.8" from its
+    path, that frame release missed (stronger track's frame masked, or
+    > 2 px). Releasing frames within 1.5 FWHM of a stronger track, covered
+    or not (`release_fwhm`), removes those at no completeness cost
+    (unmatched per injected run 0.167 → 0.100 `real_v1`, 0.100 → 0.067
+    `real_v2`; offline estimate on m4f). So the real-order rate is ~1 event
+    in 15 visits, near the 0.05 target, and a depth threshold isn't worth
+    its completeness cost on this sample; it needs more visits to tune.
+  - Open from M4: whether to keep
     per-visit thresholds on by default now that they no longer gain
     (they cost two extra detector runs per visit); bright fast movers in
     `real_v2` (0.93–0.96 at W1 14–15).

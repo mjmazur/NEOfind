@@ -234,3 +234,26 @@ def test_single_frame_dominated_tracks_rejected():
     assert not _single_frame_dominated(track([5.0, 5.0, 5.0, 5.0], [20, 20, 20, 20]), cfg)
     # A bright one with a dominant frame still has plenty left.
     assert not _single_frame_dominated(track([40.0, 12.0, 12.0], [20, 20, 20]), cfg)
+
+
+def test_release_drops_frames_near_stronger_track_even_if_uncovered():
+    from types import SimpleNamespace
+    from neodetect.detector import _release_shared_frames
+    from neodetect.trackfit import Track
+
+    times = np.arange(5) * 0.1
+    weak = SimpleNamespace(track=Track(0.0, 0.0, 30.0, 0.0, 0.0), used=np.ones(5, bool))
+    # The stronger track passes 2.5 px from the weak one at t = 0.2 only, in a
+    # frame it does not cover itself.
+    strong = SimpleNamespace(track=Track(6.0, 2.5, 0.0, 0.0, 0.2),
+                             covered=np.array([True, True, False, True, True]))
+    seen = {}
+
+    class Ev:
+        def score(self, track, used):
+            seen["used"] = used
+            return "rescored"
+
+    assert _release_shared_frames(weak, [strong], Ev(), times, tol_px=3.3) == "rescored"
+    assert seen["used"].tolist() == [True, True, False, True, True]
+    assert _release_shared_frames(weak, [strong], Ev(), times, tol_px=2.0) is weak

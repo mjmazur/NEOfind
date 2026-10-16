@@ -290,12 +290,14 @@ and the real 50% point was W1 ≈ 15.4.
   test on the path's extent, star-residual vetting); and tracks resting on
   one frame (single-frame vetting). Each check removes none of the 680
   injected-asteroid detections tested.
-- **Unmatched detections in injected runs** (0.10–0.17 per visit) are
-  above the 0.05 target met on the held-out scrambled copies: each
-  visit's real frame order is one more independent draw of chance
-  alignments, which no scrambled copy reproduces by position. In v012 a
-  10.9 3-frame track in the real order sits on two bright-star wings and
-  one faint source.
+- **Unmatched detections in injected runs** were 0.10–0.17 per visit,
+  above the 0.05 target met on the held-out scrambled copies. Most
+  borrowed one frame from an injected asteroid that frame release missed;
+  releasing frames within 1.5 FWHM of any stronger track (`release_fwhm`)
+  brings it to 0.07–0.10 at no completeness cost (offline estimate). What
+  remains is one event in the real frame order (v012, a 10.9 3-frame track
+  on two bright-star wings and one faint source), which no scrambled copy
+  reproduces by position, plus an asteroid seen in one frame only.
 - **Per-visit thresholds** (default on real WISE): with the artifacts
   handled, visits are alike (null levels 6.7–8.2, ≥5-frame thresholds
   9.8–11.9), and per-visit and global thresholds perform about the same:

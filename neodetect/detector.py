@@ -79,6 +79,11 @@ class DetectorConfig:
     # >= 9 and none of 680 injected-asteroid detections. 0 = off.
     single_frame_max_frac: float = 0.6
     single_frame_min_rest: float = 8.0
+    # Frames where a candidate passes within this many PSF FWHM of a stronger
+    # candidate are released (``_release_shared_frames``). 2 px covered-only
+    # (M2-M4) left 1/3 of the unmatched detections in real_v1/real_v2
+    # injected runs; 1.5 FWHM removed them at no completeness cost.
+    release_fwhm: float = 1.5
     # Path curvature fitted in refinement, bound per axis by
     # max(accel_max, accel_per_rate * rate, accel_per_rate2 * rate^2) in
     # arcsec/day^2 (rate in deg/day;
@@ -351,7 +356,8 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
     for r in refined:
         if any(same_track(f.track, r.track, times[r.used]) for f in final):
             continue
-        r = _release_shared_frames(r, final, evaluator, times)
+        r = _release_shared_frames(r, final, evaluator, times,
+                                   tol_px=cfg.release_fwhm * fwhm_px)
         if r is not None and r.score >= cfg.report_threshold:
             final.append(r)
     # Final paths from fully covered frames only (``refit_geometry``).
@@ -380,15 +386,19 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
 
 def _release_shared_frames(r: TrackScore, accepted: List[TrackScore], evaluator: TrackEvaluator,
                            times, tol_px: float = 2.0) -> Optional[TrackScore]:
-    """Drop frames where ``r`` sits on a stronger accepted track (the same
-    source can't belong to two objects) and rescore without them."""
+    """Drop frames where ``r`` passes within ``tol_px`` of a stronger accepted
+    track (the same source can't belong to two objects) and rescore without
+    them. Every frame counts, not only those the stronger track covers: an
+    asteroid's position can be too masked for its own fit yet leave signal a
+    few px away (on real NEOWISE, injected asteroids lent such frames to
+    false tracks 1.4-6.8" from their paths)."""
     if not accepted:
         return r
     xs, ys = r.track.position(times)
     shared = np.zeros(len(times), bool)
     for f in accepted:
         fx, fy = f.track.position(times)
-        shared |= f.covered & (np.hypot(xs - fx, ys - fy) < tol_px)
+        shared |= np.hypot(xs - fx, ys - fy) < tol_px
     if not (shared & r.used).any():
         return r
     return evaluator.score(r.track, used=r.used & ~shared)
