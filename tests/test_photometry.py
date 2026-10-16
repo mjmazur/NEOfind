@@ -44,3 +44,14 @@ def test_aperture_correction_is_one_for_gaussian_stars_and_falls_back():
     empty = np.random.default_rng(0).normal(0, 1, (300, 300))
     out = aperture_correction(empty, np.ones(empty.shape, bool), 0.95, fallback=1.15)
     assert out["fallback"] and out["apcorr"] == 1.15
+
+
+def test_centroid_offset_default_only_for_real_wise_w1():
+    from types import SimpleNamespace
+    from astropy.io import fits
+    from neodetect.io import WISE_W1_CENTROID_OFFSET_PX, default_centroid_offset
+    h = fits.Header({"TELESCOP": "WISE"})
+    assert default_centroid_offset(SimpleNamespace(header=h, band="1")) == WISE_W1_CENTROID_OFFSET_PX
+    assert default_centroid_offset(SimpleNamespace(header=h, band="2")) == (0.0, 0.0)
+    h["SIMULATD"] = True
+    assert default_centroid_offset(SimpleNamespace(header=h, band="1")) == (0.0, 0.0)

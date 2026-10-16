@@ -28,7 +28,8 @@ from typing import Optional
 import numpy as np
 from astropy.io import fits
 
-from neodetect.io import default_psf_fwhm_arcsec, load_sequence, read_image, world2pix
+from neodetect.io import (default_centroid_offset, default_psf_fwhm_arcsec, load_sequence,
+                          read_image, world2pix)
 from neodetect.psf import FWHM_TO_SIGMA
 from neosim.astrometry import tangent_to_equatorial
 from neosim.orbit import (KM_S_TO_AU_DAY, OrbitMover, draw_distance, earth_heliocentric_velocity,
@@ -134,8 +135,13 @@ def inject_visit(visit_dir, out_dir, n: int = 20, mag_range=(13.5, 16.5), rate_r
              "source_visit": str(visit_dir), "seed": seed,
              "psf": {"kind": "empirical ePSF", "fwhm_px": psf.fwhm_px(), "n_stars": psf.n_stars},
              "pixel_convention": "0-based, pixel centers at integers (astropy origin=0)",
+             # Where sources sit relative to their positions: the ePSF's origin
+             # is a Gaussian-fit center, real stars sit at catalog positions,
+             # so stamps are drawn this far from the truth (as stars are).
+             "centroid_offset_px": list(default_centroid_offset(seq.frames[0])),
              "asteroids": []}
     per_ast = {a.id: [] for a in asteroids}
+    offset = default_centroid_offset(seq.frames[0])
     paths = {a.id: np.array([np.ravel(a.radec(f.mjd, _observer_offset(f))) for f in seq.frames])
              for a in asteroids}
     for k, f in enumerate(seq.frames):
@@ -151,7 +157,7 @@ def inject_visit(visit_dir, out_dir, n: int = 20, mag_range=(13.5, 16.5), rate_r
             ix, iy = int(round(x)), int(round(y))
             in_frame = bool(0 <= ix < w and 0 <= iy < h and np.isfinite(raw[iy, ix]))
             if -psf.radius <= ix < w + psf.radius and -psf.radius <= iy < h + psf.radius:
-                st, r0, c0 = psf.stamp(x, y)
+                st, r0, c0 = psf.stamp(x + offset[0], y + offset[1])
                 rs, cs = slice(max(r0, 0), min(r0 + st.shape[0], h)), slice(max(c0, 0), min(c0 + st.shape[1], w))
                 raw[rs, cs] += (EE_WITHIN_STAMP * flux
                                 * st[rs.start - r0:rs.stop - r0, cs.start - c0:cs.stop - c0])

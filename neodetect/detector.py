@@ -11,7 +11,8 @@ import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
 
-from .io import Sequence, default_aperture_correction, default_aperture_ee, world2pix
+from .io import (Sequence, default_aperture_correction, default_aperture_ee,
+                 default_centroid_offset, world2pix)
 from .linking import link
 from .preprocess import Preprocessed, preprocess
 from .register import Registered, register
@@ -65,6 +66,13 @@ class DetectorConfig:
     # deg/day for injected NEOs at 0.2 AU closing at 30 km/s. With v_r /
     # v_perp up to ~4 that is <= accel_per_rate2 * rate^2 (rate in deg/day).
     accel_per_rate2: float = 500.0
+    # Tracks using fewer frames are fitted straight: with 3 frames the six
+    # path parameters pass through any 3 points, and curved 3-frame chance
+    # alignments of artifacts set the M4 false-alarm tail on simulations
+    # (9 of 11 null candidates >= 9, all with 85-1270"/day^2). Over 3
+    # consecutive frames real curvature is ~1 px (a 1.7 deg/day NEO: 38.2
+    # straight vs 40.3 curved).
+    accel_min_frames: int = 4
 
     # Deflate weights where a frame's local SNR scatter exceeds the noise
     # model (scattered light, crowded-field edges; ``preprocess``); 0 = off.
@@ -74,6 +82,9 @@ class DetectorConfig:
     # ``photometry``); aperture_ee None = instrument default (io).
     aperture_correction: bool = True
     aperture_ee: Optional[float] = None
+    # Astrometry: (dx, dy) native px subtracted from Gaussian-fit positions
+    # in every frame; None = instrument default (``io.default_centroid_offset``).
+    centroid_offset: Optional[tuple] = None
 
     # Coherent-score thresholds: the operating point, by how many frames a
     # track uses. Short tracks need more: three or four single-frame artifacts
@@ -123,6 +134,17 @@ def _accel_bound_px(cfg: DetectorConfig, speed_px_day: float, scale_arcsec: floa
     rate = speed_px_day * scale_arcsec / 3600.0
     return max(cfg.accel_max_arcsec_day2, cfg.accel_per_rate * rate,
                cfg.accel_per_rate2 * rate * rate) / scale_arcsec
+
+
+def _straight(track: Track, times) -> Track:
+    """The straight track through ``track``'s positions at ``times`` (least
+    squares): dropping the acceleration alone would move a track far from
+    its frames when they lie far from ``t_ref``."""
+    xs, ys = track.position(times)
+    dt = np.asarray(times) - track.t_ref
+    A = np.column_stack([np.ones_like(dt), dt])
+    (x0, vx), (y0, vy) = (np.linalg.lstsq(A, v, rcond=None)[0] for v in (xs, ys))
+    return Track(float(x0), float(y0), float(vx), float(vy), track.t_ref)
 
 
 def same_track(a: Track, b: Track, times, tol_px: float = 2.0) -> bool:
@@ -219,6 +241,8 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
     n_inconsistent = 0
     for tr in chosen:
         r = evaluator.refine(tr, accel_max=_accel_bound_px(cfg, tr.speed, scale))
+        if r is not None and r.n_used < cfg.accel_min_frames and (r.track.ax or r.track.ay):
+            r = evaluator.refine(_straight(r.track, times[r.used]), accel_max=0.0)
         if r is None or r.score < cfg.report_threshold:
             continue
         if r.track.speed < v_stationary or r.n_used < cfg.min_frames:
@@ -236,7 +260,8 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
         if r is not None and r.score >= cfg.report_threshold:
             final.append(r)
     # Final paths from fully covered frames only (``refit_geometry``).
-    final = [evaluator.refit_geometry(r, accel_max=_accel_bound_px(cfg, r.track.speed, scale))
+    final = [evaluator.refit_geometry(r, accel_max=_accel_bound_px(cfg, r.track.speed, scale)
+                                      if r.n_used >= cfg.accel_min_frames else 0.0)
              for r in final]
     final = [r for r in final if r.score >= cfg.report_threshold]
     final.sort(key=lambda r: -r.score)
@@ -248,7 +273,10 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
     stats.update(n_seeds=len(seeds), n_refined=len(chosen), n_inconsistent=n_inconsistent,
                  timing=timing,
                  max_score=max((r.score for r in refined), default=None))
-    detections = [to_detection(r, reg, pre, cfg, apc["apcorr"]) for r in final]
+    offsets = [tuple(cfg.centroid_offset) if cfg.centroid_offset is not None
+               else default_centroid_offset(f) for f in seq.frames]
+    stats["centroid_offset_px"] = [list(o) for o in offsets]
+    detections = [to_detection(r, reg, pre, cfg, apc["apcorr"], offsets) for r in final]
     return DetectionResult(detections=detections, config=cfg.to_dict(), stats=stats,
                            reg=reg, pre=pre, evaluator=evaluator, t_ref=t_ref)
 
@@ -270,12 +298,23 @@ def _release_shared_frames(r: TrackScore, accepted: List[TrackScore], evaluator:
 
 
 def to_detection(r: TrackScore, reg: Registered, pre: Preprocessed,
-                 cfg: DetectorConfig, apcorr: float = 1.0) -> dict:
-    """Detection record; fluxes are scaled to total flux by ``apcorr``."""
+                 cfg: DetectorConfig, apcorr: float = 1.0, offsets=None) -> dict:
+    """Detection record; fluxes are scaled to total flux by ``apcorr``, and
+    each frame's position moved by ``-offsets[k]`` native px (the centroid
+    convention; the reference position by their mean sky shift)."""
     tr = r.track
     xs, ys = tr.position(pre.times)
     ra, dec = reg.wcs.all_pix2world(xs, ys, 0)
     ra0, dec0 = reg.wcs.all_pix2world([tr.x0], [tr.y0], 0)
+    if offsets is not None and np.any(offsets):
+        shifts = []
+        for k in range(pre.n):
+            fx, fy = world2pix(reg.frame_wcs[k], [ra[k]], [dec[k]])
+            r2, d2 = reg.frame_wcs[k].all_pix2world(fx - offsets[k][0], fy - offsets[k][1], 0)
+            shifts.append((float(r2[0]) - ra[k], float(d2[0]) - dec[k]))
+            ra[k], dec[k] = float(r2[0]), float(d2[0])
+        dra, ddec = np.median(np.array(shifts), axis=0)
+        ra0, dec0 = ra0 + dra, dec0 + ddec
     dt = 0.01
     (xa, xb), (ya, yb) = tr.position([tr.t_ref - dt, tr.t_ref + dt])
     (raa, rab), (deca, decb) = reg.wcs.all_pix2world([xa, xb], [ya, yb], 0)

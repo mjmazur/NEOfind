@@ -76,7 +76,10 @@ def psf_sharpness_limits(sigma: float):
 STAR_SNR_MIN = 30.0  # peak SNR of the stars that calibrate the ratio limits
 STAR_MIN = 10
 STAR_QUANTILE = 0.95
-STAR_MIN_WIDTH = 0.7  # px: second-moment width that tells a star from a hit (~0.4)
+STAR_MIN_WIDTH = 0.7  # px: minor-axis second-moment width of a star (a hit: ~0.4)
+STAR_MAX_ELONGATION = 1.5  # major / minor width (cosmic-ray tracks are elongated)
+STAR_MAX_PEAK_FRAC = 0.3  # peak pixel / 5x5 flux (Gaussian WISE star ~0.16, a hit 0.5-1)
+STAR_MAX_LIMIT_FACTOR = 1.75  # measured limits / Gaussian at most (real WISE: 1.1-1.5)
 
 
 def _ratios(r, ys, xs):
@@ -107,14 +110,18 @@ def star_sharpness_limits(r: np.ndarray, s: np.ndarray, bad: np.ndarray, psf_sig
     meas = measured_sharpness(r, s, bad)
     if meas is None:
         meas = fallback
-    return gauss if meas is None else tuple(max(g, m) for g, m in zip(gauss, meas))
+    if meas is None:
+        return gauss
+    return tuple(min(max(g, m), STAR_MAX_LIMIT_FACTOR * g) for g, m in zip(gauss, meas))
 
 
 def measured_sharpness(r: np.ndarray, s: np.ndarray, bad: np.ndarray):
     """The ``STAR_QUANTILE`` of bright unmasked stars' (axis, diagonal, box)
     ratios, or None with fewer than ``STAR_MIN`` stars. Bright cosmic-ray
-    hits are peaks too; they are told apart by their width (5x5 second
-    moment)."""
+    hits are peaks too; stars are told apart by being round, wide and not
+    too concentrated in one pixel (5x5 moments). With a width cut alone,
+    elongated hits passed and the limits on simulations came out ~10x the
+    Gaussian ones, switching the tests off."""
     h, w = r.shape
     clean = ndimage.minimum_filter((~bad & np.isfinite(s)).astype(np.uint8), size=5).astype(bool)
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -125,9 +132,19 @@ def measured_sharpness(r: np.ndarray, s: np.ndarray, bad: np.ndarray):
     ys, xs = np.nonzero(peak)
     oy, ox = np.mgrid[-2:3, -2:3]
     cut = np.maximum(r[ys[:, None] + oy.ravel(), xs[:, None] + ox.ravel()], 0.0)
-    tot = cut.sum(axis=1)
-    m2 = (cut * (oy.ravel() ** 2 + ox.ravel() ** 2)).sum(axis=1) / np.maximum(tot, 1e-30)
-    star = np.sqrt(0.5 * m2) >= STAR_MIN_WIDTH
+    tot = np.maximum(cut.sum(axis=1), 1e-30)
+    u, v = ox.ravel().astype(float), oy.ravel().astype(float)
+    mu, mv = (cut * u).sum(axis=1) / tot, (cut * v).sum(axis=1) / tot
+    cuu = (cut * u * u).sum(axis=1) / tot - mu * mu
+    cvv = (cut * v * v).sum(axis=1) / tot - mv * mv
+    cuv = (cut * u * v).sum(axis=1) / tot - mu * mv
+    half_tr, det = 0.5 * (cuu + cvv), cuu * cvv - cuv * cuv
+    disc = np.sqrt(np.maximum(half_tr * half_tr - det, 0.0))
+    minor = np.sqrt(np.maximum(half_tr - disc, 0.0))
+    major = np.sqrt(np.maximum(half_tr + disc, 0.0))
+    peak_frac = cut[:, 12] / tot
+    star = ((minor >= STAR_MIN_WIDTH) & (major <= STAR_MAX_ELONGATION * minor)
+            & (peak_frac <= STAR_MAX_PEAK_FRAC))
     ys, xs = ys[star], xs[star]
     if ys.size < STAR_MIN:
         return None

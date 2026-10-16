@@ -139,6 +139,8 @@ Pipeline:
    strays up to 3" (1 WISE px) from a straight line over a visit. The bound
    is max(60, 150 × rate, 500 × rate²) "/day² (rate in deg/day). The rate²
    term is for close objects, whose rate changes with their distance.
+   Tracks using fewer than 4 frames are fitted straight: with 3 frames a
+   curved path fits any 3 points.
    A final track's path is re-fitted on its fully covered frames (≥ 90%
    of the PSF on valid pixels). Otherwise the fit can bend the path toward
    valid pixels to keep a partly masked frame; that put Lachesis's
@@ -153,6 +155,14 @@ Pipeline:
    total flux with an aperture correction measured on the visit's own
    bright isolated stars (≥ 8 needed; ~1.15 on NEOWISE W1, the fallback in
    crowded fields; ~1.00 on simulations).
+8. **Astrometry**: on real WISE W1, Gaussian-fit positions sit (+0.147,
+   +0.085) native px from the NEOWISE catalog's PSF-fit positions, the
+   convention the frame WCS is calibrated in. That's 0.45″ and constant to
+   ~0.01 px over the detector and over 8 visits at every orientation; the
+   real PSF is slightly asymmetric. Reported positions are corrected per frame
+   (`centroid_offset`, default from `io.default_centroid_offset`). Oceana
+   then agrees with the catalog to 0.02″ along and 0.06″ across its track
+   (0.46″ before). Injections draw their stamps at the same offset.
 
 **Per-visit thresholds** (`nullcal.py`). On real data the false-alarm tail
 varies far more between visits than one global threshold can follow. So

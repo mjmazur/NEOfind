@@ -130,6 +130,12 @@ def run_one(run_dir, cfg: DetectorConfig = None, force: bool = False,
     if out.exists() and not force:
         return json.loads(out.read_text())
     seq = load_sequence(run_dir)
+    cfg = cfg or DetectorConfig()
+    if seq.truth is not None and "centroid_offset_px" not in seq.truth \
+            and seq.truth.get("source_visit") and cfg.centroid_offset is None:
+        # Injected before stamps were drawn at the catalog convention: their
+        # Gaussian-fit centers are the truth, so don't correct.
+        cfg = replace(cfg, centroid_offset=(0.0, 0.0))
     result = detect(seq, cfg)
     doc = result.to_dict()
     doc["truth_eval"] = truth_eval(seq, result)

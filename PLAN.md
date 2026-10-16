@@ -199,9 +199,36 @@ sweep.py, tests/
     was also worse (0.54" rms vs 0.30") and needs a recheck after the
     re-run (`detections_m4b.json`). The simulated `wise_v1` run started
     before these two changes.
-  - Pending, in order: the simulated regression run (`wise_v1`,
-    `detections_m4.json`), then `real_v1` and `real_v2` with every fix
-    (`detections_m4b.json`). After that, recalibrate `nullcal.NULL_RATIO`
+  - Astrometric offset: stars and asteroids alike sat ~0.45″ from the
+    NEOWISE catalog and SkyBoT (the two agree to ~0.1″), along a fixed
+    detector direction, so the sign flipped between visits scanned in
+    opposite directions. In native px it is (+0.147, +0.085), constant to
+    ~0.01 px over 16 frames of 8 visits: a Gaussian-fit vs catalog PSF-fit
+    centroid convention. It's now corrected in reported positions. Injected
+    stamps are drawn at the same offset (`truth.json`
+    `centroid_offset_px`). Older injection sets without that key are
+    evaluated with the correction off, so `real_v1`/`real_v2` numbers stay
+    comparable. Residual after the fix: Oceana 0.02″/0.06″ vs the catalog;
+    Lachesis ~0.2″, where masked core pixels perturb its centroids.
+  - Simulated regression (`wise_v1`, `detections_m4.json`, before the
+    curvature-bound, triage and astrometry changes): thresholds 12.5 /
+    10.0 / 8.75 (M2/M3: 10.25 / 9.5 / 8.25), completeness 0.80 / 0.38 at
+    W1 15–15.5 / 15.5–16 (0.82 / 0.40), 2–5 deg/day 0.45 (0.55). Two causes:
+    - Curved 3-frame tracks: 6 parameters pass through any 3 points, so
+      chance alignments of artifacts got easier (9 of 11 null candidates
+      ≥ 9 used 3 frames with 85–1270"/day²). Tracks using < 4 frames are
+      now fitted straight (`accel_min_frames`), restarting from the line
+      through the curved track's positions at its frames.
+    - The star-measured cosmic-ray limits were ~10× the Gaussian ones on
+      simulations: elongated cosmic-ray tracks passed the width cut, which
+      switched masking off (a 16.2 null track of unmasked hits). Stars must
+      now also be round and not concentrated in one pixel, and the limits
+      are capped at 1.75× the Gaussian (simulations now measure ~1.05×,
+      real WISE 1.1–1.5×).
+    The three worst simulated nulls now match M3 (9.9 / 8.1 / 10.8 vs
+    7.9 / 7.8 / 10.8). The fast movers stay found (52.8, 38.3).
+  - Pending, in order: `real_v1`, `real_v2` and the simulated `wise_v1`,
+    all with every fix (`detections_m4b.json`). After that, recalibrate `nullcal.NULL_RATIO`
     and the fixed thresholds.
 - Real-data limits found in M3, and what became of them:
   - Crowded fields (|b| < ~20°) dominate the false-alarm tail. They also

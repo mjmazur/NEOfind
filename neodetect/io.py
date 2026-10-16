@@ -164,6 +164,23 @@ def default_aperture_ee(frame: "Frame") -> float:
     return 0.959 if _is_real_wise(frame.header) else 1.0
 
 
+# Real WISE W1: position of a Gaussian-fit centroid minus the NEOWISE
+# single-exposure catalog's PSF-fit position (the convention the frame WCS
+# is calibrated in), native px. Constant over the detector and over 16
+# frames of 8 visits at every orientation to ~0.01 px; the real PSF is
+# slightly asymmetric.
+WISE_W1_CENTROID_OFFSET_PX = (0.147, 0.085)
+
+
+def default_centroid_offset(frame: "Frame") -> tuple:
+    """(dx, dy) native px to subtract from Gaussian-fit positions: the
+    real-WISE W1 offset above, else (0, 0) (the Gaussian is the PSF in
+    simulations; unknown otherwise)."""
+    if _is_real_wise(frame.header) and str(frame.band or "").upper() in ("1", "W1"):
+        return WISE_W1_CENTROID_OFFSET_PX
+    return (0.0, 0.0)
+
+
 def default_aperture_correction(frame: "Frame") -> float:
     """Gaussian-fit to total flux ratio used when a sequence has too few
     isolated stars to measure it. Real WISE W1: 1.15, the median over 15
