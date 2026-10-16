@@ -188,19 +188,30 @@ Pipeline:
    then agrees with the catalog to 0.02″ along and 0.06″ across its track
    (0.46″ before). Injections draw their stamps at the same offset.
 
-**Per-visit thresholds** (`nullcal.py`). On real data the false-alarm tail
-varies far more between visits than one global threshold can follow. So
-`detect` runs the detector on time-scrambled copies of the visit
-(`--null-scrambles N`, default 2 on real WISE frames, 0 = off). The visit's
-*null level* is the median over copies of the 5th-highest candidate score.
-The thresholds are that level × 1.30 / 1.32 / 1.46 for 3 / 4 / ≥5-frame
-tracks (`--null-ratio`). The factors are calibrated on `sims/real_v1` so
-that held-out scrambled copies give ≤ 0.05 false detections per visit.
-Each copy costs one detector run. The copies also give an **artifact
-veto**: a candidate within 60″ (at the reference time) of a scrambled-copy
-candidate scoring ≥ 1.2× the null level is rejected, as something that
-recurs whatever the frame order isn't moving. Without it one scattered-light
-artifact in one visit set the ≥ 5-frame factor.
+**Thresholds on real WISE** (`io.default_thresholds`, `nullcal.py`). Real
+NEOWISE frames get their own calibration (10.0 / 9.25 / 10.25 for 3 / 4 /
+≥5-frame tracks, from `sims/real_v1`); `--threshold*` overrides it.
+`detect` also runs the detector on one time-scrambled copy of the visit
+(`--null-scrambles N`, default 1 on real WISE frames, 0 = off), whose
+*null level* (5th-highest candidate score) serves two purposes:
+
+- **Guard** (default `--null-mode guard`): if the level exceeds the highest
+  single-copy level of the calibration sample (`GUARD_LEVEL` 8.4; median
+  7.1), the thresholds are raised in proportion, for a sky region noisier
+  than anything calibrated on (none of the 15 calibration visits is).
+- **Artifact veto:** a candidate within 60″ (at the reference time) of a
+  scrambled-copy candidate scoring ≥ 1.2× the null level is rejected, as
+  something that recurs whatever the frame order isn't moving.
+
+Per-visit thresholds proper (`--null-mode per-visit`, or `--null-ratio`;
+level × 1.30 / 1.32 / 1.46, best with 2 copies) were the default until the
+M4 artifact handling evened the visits out. Held out one visit at a time
+(calibrated on the other 14), global thresholds gave 0.044 false
+detections per null copy and per-visit ones 0.089, at slightly lower
+completeness (0.63 vs 0.68 at W1 15.5–16): they also lower the bar in the
+quietest visits. The guard matched global (0.044) for one extra detector
+run instead of two. `evaluate` reports global, per-visit and guard
+schemes.
 
 **Reporting** (`report.py`): `--ades FILE` writes ADES PSV for the MPC,
 one row per frame a detection uses: the track position at that frame's
@@ -298,11 +309,12 @@ and the real 50% point was W1 ≈ 15.4.
   remains is one event in the real frame order (v012, a 10.9 3-frame track
   on two bright-star wings and one faint source), which no scrambled copy
   reproduces by position, plus an asteroid seen in one frame only.
-- **Per-visit thresholds** (default on real WISE): with the artifacts
-  handled, visits are alike (null levels 6.7–8.2, ≥5-frame thresholds
-  9.8–11.9), and per-visit and global thresholds perform about the same:
-  0.93 / 0.62 / 0.13 per visit vs 0.95 / 0.68 / 0.14 global at W1
-  15–15.5 / 15.5–16 / 16–16.5 (`real_v1`).
+- **Per-visit vs global thresholds:** with the artifacts handled, visits
+  are alike (null levels 6.7–8.2), and per-visit thresholds no longer
+  help: 0.93 / 0.62 / 0.13 vs 0.95 / 0.68 / 0.14 global at W1 15–15.5 /
+  15.5–16 / 16–16.5 (`real_v1`), and twice the false rate held out per
+  visit. Real WISE now uses the global thresholds plus a one-copy guard
+  (above), which on this sample raises no visit.
 - **Curved injections** (`real_v2`) are found as well as straight ones at
   W1 ≥ 15; the bright, fast ones (W1 14–15) at 0.93–0.96, against 1.00:
   close, fast movers cross a cutout in few frames.
@@ -314,8 +326,8 @@ and the real 50% point was W1 ≈ 15.4.
   0.58″ on the curved `real_v2`; 0.3–0.6% in rate; 0.17–0.28° in position
   angle; magnitudes −0.01 mag biased, 0.05–0.07 mag rms (aperture
   correction; M3 was 0.14 mag faint).
-- **Cost:** ~3–6 min per visit on 32 cores, plus one run per scrambled
-  copy for per-visit thresholds. The full sweep (75 runs, `-j 4`) takes
+- **Cost:** ~3–6 min per visit on 32 cores, plus one run for the guard's
+  scrambled copy. The full sweep (75 runs, `-j 4`) takes
   ~5 h.
 
 ## WISE/NEOWISE data (`neowise`)

@@ -24,13 +24,22 @@ at the same false-alarm rate, with thresholds for >= 5 frames from 9.5
 (clean visits) to 20. The final M4 detector's artifact handling (streak
 mask, veto, star-residual and single-frame vetting) evens the visits out
 (levels 6.7-8.2, >= 5-frame thresholds 9.8-11.9), and per-visit and global
-thresholds then perform alike (0.62 vs 0.68 at W1 15.5-16).
+thresholds then perform alike (0.62 vs 0.68 at W1 15.5-16); held out one
+visit at a time, per-visit thresholds gave twice the false rate of global
+ones (0.089 vs 0.044 per copy).
+
+So the real-WISE default is now **guard** mode: the instrument's global
+thresholds (``io.default_thresholds``), raised in proportion only when the
+visit's null level from one scrambled copy exceeds ``GUARD_LEVEL``, the
+highest single-copy level of the calibration sample; held out this matched
+global thresholds (0.044). Per-visit mode (level x ``NULL_RATIO``) remains
+available.
 
 In production ``self_calibrate`` scrambles the frame times of the sequence
 being searched, runs the detector on the copies, and returns the thresholds
-(``neodetect detect --null-scrambles N``, default 2 for real WISE frames:
-on the Oceana visit single copies gave levels of 7.7-8.4, so the median of
-two steadies the thresholds); each copy costs one detector run.
+(``neodetect detect --null-scrambles N``, default 1 for real WISE frames;
+for per-visit mode use 2: on the Oceana visit single copies gave levels of
+7.7-8.4); each copy costs one detector run.
 
 **Artifact veto.** Some false tracks recur at the same place in every
 scrambled copy: a fixed artifact (scattered light along a cutout edge in a
@@ -55,6 +64,12 @@ NULL_RANK = 5
 # detections per visit: 0 found). Recalibrate with ``neodetect evaluate``
 # (``per_visit.ratios``) after detector changes.
 NULL_RATIO = {"3": 1.30, "4": 1.32, "5+": 1.46}
+# Guard mode: a visit's thresholds are raised by level / GUARD_LEVEL when
+# its null level (one scrambled copy) exceeds the highest single-copy level
+# of the calibration sample (sims/real_v1, final M4 detector: 8.39 in v011;
+# median 7.1). Held out per visit this matched global thresholds' false
+# rate (0.044 per copy) where per-visit thresholds gave 0.089.
+GUARD_LEVEL = 8.4
 VETO_RADIUS_ARCSEC = 60.0
 VETO_MIN_RATIO = 1.2
 
@@ -151,10 +166,19 @@ def scrambled(seq, rng):
     return dataclasses.replace(seq, frames=frames, truth=None, known=None)
 
 
+def guard_thresholds(level: float, base: Dict[str, float],
+                     guard_level: float = GUARD_LEVEL) -> Dict[str, float]:
+    """``base`` thresholds, raised in proportion when ``level`` exceeds ``guard_level``."""
+    f = max(1.0, level / guard_level)
+    return {c: float(t * f) for c, t in base.items()}
+
+
 def self_calibrate(seq, cfg=None, n: int = 1, seed: int = 0, ratios=None,
-                   rank: int = NULL_RANK, log=None) -> dict:
-    """Run the detector on ``n`` time-scrambled copies of ``seq``; the null
-    level and per-visit thresholds."""
+                   rank: int = NULL_RANK, log=None, mode: str = "per-visit",
+                   base: Optional[Dict[str, float]] = None) -> dict:
+    """Run the detector on ``n`` time-scrambled copies of ``seq``: the null
+    level, artifact veto sites and thresholds -- per-visit (level x ratios)
+    or, in ``guard`` mode, ``base`` raised for an unusually noisy visit."""
     from .detector import detect
     log = log or (lambda *a: None)
     rng = np.random.default_rng(seed)
@@ -165,13 +189,22 @@ def self_calibrate(seq, cfg=None, n: int = 1, seed: int = 0, ratios=None,
         copies.append([(d["score"], d["n_frames_used"], d["ra_deg"], d["dec_deg"])
                        for d in res.detections])
     level = null_level([[c[0] for c in cp] for cp in copies], rank)
-    thr = thresholds(level, ratios)
+    if mode == "guard":
+        if base is None:
+            raise ValueError("guard mode needs base thresholds")
+        thr = guard_thresholds(level, base)
+    elif mode == "per-visit":
+        thr = thresholds(level, ratios)
+    else:
+        raise ValueError(f"unknown null mode {mode!r}")
     sites = veto_sites(copies, level)
-    log(f"null level {level:.2f} (rank {rank}, {n} copies) -> thresholds "
+    log(f"null level {level:.2f} (rank {rank}, {n} copies, {mode}) -> thresholds "
         + ", ".join(f"{c} frames {t:.2f}" for c, t in thr.items())
         + f"; {len(sites)} artifact veto sites")
-    return {"n_copies": n, "seed": seed, "rank": rank, "level": level,
-            "ratios": dict(ratios or NULL_RATIO), "thresholds": thr,
+    return {"n_copies": n, "seed": seed, "rank": rank, "level": level, "mode": mode,
+            "guard_level": GUARD_LEVEL if mode == "guard" else None,
+            "ratios": dict(ratios or NULL_RATIO) if mode == "per-visit" else None,
+            "thresholds": thr,
             "veto_sites": sites.tolist(),
             "copy_top_scores": [sorted((c[0] for c in cp), reverse=True)[:rank] for cp in copies]}
 

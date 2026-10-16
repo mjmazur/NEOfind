@@ -39,15 +39,15 @@ def _add_detector_args(p: argparse.ArgumentParser) -> None:
     g.add_argument("--backend", default=d.backend, help="shift-and-stack backend: auto, numba, numpy")
     g.add_argument("--min-frames", type=int, default=d.min_frames,
                    help=f"frames a track must use (default: {d.min_frames})")
-    g.add_argument("--threshold", type=float, default=d.detect_threshold, dest="detect_threshold",
+    g.add_argument("--threshold", type=float, default=None, dest="detect_threshold",
                    help="detection threshold for tracks using >= 5 frames "
-                        f"(default: {d.detect_threshold})")
-    g.add_argument("--threshold-4", type=float, default=d.detect_threshold_4,
+                        f"(default: the instrument's calibration, else {d.detect_threshold})")
+    g.add_argument("--threshold-4", type=float, default=None,
                    dest="detect_threshold_4",
-                   help=f"... using 4 frames (default: {d.detect_threshold_4})")
-    g.add_argument("--threshold-3", type=float, default=d.detect_threshold_3,
+                   help=f"... using 4 frames (default: instrument's, else {d.detect_threshold_4})")
+    g.add_argument("--threshold-3", type=float, default=None,
                    dest="detect_threshold_3",
-                   help=f"... using 3 frames (default: {d.detect_threshold_3})")
+                   help=f"... using 3 frames (default: instrument's, else {d.detect_threshold_3})")
     g.add_argument("--report-threshold", type=float, default=d.report_threshold,
                    help=f"keep candidates above this for diagnostics (default: {d.report_threshold})")
     g.add_argument("--threads", type=int, default=0, help="threads (default: all cores)")
@@ -56,6 +56,12 @@ def _add_detector_args(p: argparse.ArgumentParser) -> None:
 def _config(args) -> DetectorConfig:
     fields = DetectorConfig.__dataclass_fields__
     kw = {k: v for k, v in vars(args).items() if k in fields}
+    thr = ("detect_threshold", "detect_threshold_3", "detect_threshold_4")
+    if any(kw.get(k) is not None for k in thr):
+        kw["instrument_thresholds"] = False  # explicit thresholds win
+    for k in thr:
+        if kw.get(k) is None:
+            kw.pop(k, None)
     if kw.get("region") is not None:
         kw["region"] = tuple(kw["region"])
     return DetectorConfig(**kw)
@@ -114,7 +120,11 @@ def cmd_detect(args) -> int:
     if n_null:
         from . import nullcal
         ratios = dict(zip(nullcal.FRAME_CLASSES, args.null_ratio)) if args.null_ratio else None
-        cal = nullcal.self_calibrate(seq, cfg, n=n_null, ratios=ratios, log=log)
+        mode = args.null_mode or ("per-visit" if ratios else "guard")
+        c = doc["config"]  # thresholds as resolved for this instrument
+        base = {"3": c["detect_threshold_3"], "4": c["detect_threshold_4"], "5+": c["detect_threshold"]}
+        cal = nullcal.self_calibrate(seq, cfg, n=n_null, ratios=ratios, log=log, mode=mode,
+                                     base=base)
         nullcal.apply(doc["detections"], cal["thresholds"], cal["veto_sites"])
         doc["null_calibration"] = cal
     doc["frames"] = [{"path": f.path, "mjd": f.mjd} for f in seq.frames]
@@ -196,6 +206,15 @@ def cmd_evaluate(args) -> int:
             print(f"\n{name:>14} {'n':>4} {'complete':>8}   (per-visit thresholds)")
             for c in pv[key]:
                 print(f"{c['lo']:6.2f}-{c['hi']:<7.2f} {c['n']:4d} {c['completeness']:8.2f}")
+    gd = s.get("guard")
+    if gd:
+        raised = ", ".join(f"{v[-30:]} x{f:.2f}" for v, f in gd["raised"].items()) or "none"
+        print(f"\nguard (real-WISE default: global thresholds, raised when a visit's one-copy "
+              f"null level > {gd['guard_level']}; veto from that copy): "
+              f"{gd['false_per_null_run']:.3f} false per null run; raised: {raised}")
+        print(f"{'magnitude':>14} {'n':>4} {'complete':>8}   (guard)")
+        for c in gd["completeness_by_mag"]:
+            print(f"{c['lo']:6.2f}-{c['hi']:<7.2f} {c['n']:4d} {c['completeness']:8.2f}")
     if s["accuracy"]:
         print("\naccuracy of detected asteroids (global thresholds):")
         for k, v in s["accuracy"].items():
@@ -229,12 +248,17 @@ def build_parser() -> argparse.ArgumentParser:
                                      "else the header's MPCCODE)")
     d.add_argument("--gifs", metavar="DIR", help="write an animated cutout GIF per detection")
     d.add_argument("--null-scrambles", type=int, default=None, metavar="N",
-                   help="set this visit's thresholds from N time-scrambled copies of it "
-                        "(one detector run each; see nullcal), overriding --threshold*; "
-                        "0 = off (default: 2 for real WISE frames, else 0)")
+                   help="run the detector on N time-scrambled copies of the visit (see "
+                        "nullcal): guard mode raises the thresholds of an unusually noisy "
+                        "visit, per-visit mode sets them from the copies; both veto "
+                        "candidates that recur in the copies. 0 = off (default: 1 for real "
+                        "WISE frames, else 0)")
+    d.add_argument("--null-mode", choices=("guard", "per-visit"), default=None,
+                   help="what the scrambled copies set (default: guard; per-visit with "
+                        "--null-ratio)")
     d.add_argument("--null-ratio", type=float, nargs=3, metavar=("R3", "R4", "R5"),
-                   help="threshold / null level for 3, 4, >=5 frames (default: the real-NEOWISE "
-                        "calibration in nullcal; `evaluate` prints new ones)")
+                   help="per-visit mode: threshold / null level for 3, 4, >=5 frames (default: "
+                        "the real-NEOWISE calibration in nullcal; `evaluate` prints new ones)")
     _add_detector_args(d)
     d.set_defaults(func=cmd_detect)
 

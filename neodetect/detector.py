@@ -4,14 +4,14 @@ fit -> vetting -> detections."""
 
 import math
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import List, Optional
 
 import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
 
-from .io import (Sequence, default_aperture_correction, default_aperture_ee,
+from .io import (Sequence, default_aperture_correction, default_aperture_ee, default_thresholds,
                  default_centroid_offset, world2pix)
 from .linking import link
 from .preprocess import Preprocessed, preprocess
@@ -131,11 +131,13 @@ class DetectorConfig:
     # five or more. Calibrate on asteroid-free runs with ``neodetect
     # evaluate``. Candidates above ``report_threshold`` are kept for diagnostics.
     # Defaults: simulated WISE W1 (sims/sweeps/wise_v1, final M4 detector,
-    # 72 null runs, 0.04 false per run). Real WISE frames use per-visit
-    # thresholds (``nullcal``) instead.
+    # 72 null runs, 0.04 false per run). With ``instrument_thresholds`` an
+    # instrument's own calibration replaces them (``io.default_thresholds``:
+    # real NEOWISE W1 10.0 / 9.25 / 10.25).
     detect_threshold: float = 8.75  # tracks using >= 5 frames
     detect_threshold_4: float = 9.25
     detect_threshold_3: float = 9.0
+    instrument_thresholds: bool = True
     report_threshold: float = 5.0
 
     threads: int = 0  # 0 = all cores
@@ -245,6 +247,11 @@ def same_track(a: Track, b: Track, times, tol_px: float = 2.0) -> bool:
 def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResult:
     cfg = cfg or DetectorConfig()
     log = log or (lambda *a: None)
+    if cfg.instrument_thresholds and seq.frames:
+        t = default_thresholds(seq.frames[0])
+        if t is not None:
+            cfg = replace(cfg, detect_threshold_3=t[0], detect_threshold_4=t[1],
+                          detect_threshold=t[2])
     timing = {}
     t = time.time()
     reg = register(seq, ref=cfg.ref_frame, region=cfg.region,

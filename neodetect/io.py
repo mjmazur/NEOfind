@@ -149,11 +149,24 @@ def _is_real_wise(h: fits.Header) -> bool:
 
 
 def default_null_scrambles(frame: "Frame") -> int:
-    """Time-scrambled copies ``neodetect detect`` runs to set per-visit
-    thresholds (``nullcal``): 2 for real WISE frames, whose false-alarm
-    tails vary widely between visits (the median of two copies halves the
-    scatter of one), else 0 (the fixed thresholds)."""
-    return 2 if _is_real_wise(frame.header) else 0
+    """Time-scrambled copies ``neodetect detect`` runs (``nullcal``): 1 for
+    real WISE frames, as a guard that raises the thresholds of a visit far
+    noisier than the calibration sample (and feeds the artifact veto), else
+    0. Per-visit thresholds proper (2 copies) didn't beat global ones held
+    out once the M4 artifact handling evened the visits out."""
+    return 1 if _is_real_wise(frame.header) else 0
+
+
+# Detection thresholds (3 / 4 / >= 5 frames) calibrated on real NEOWISE W1
+# single exposures (sims/real_v1, final M4 detector, 45 scrambled nulls,
+# <= 0.05 false per visit; held out per visit: 0.044).
+REAL_WISE_THRESHOLDS = (10.0, 9.25, 10.25)
+
+
+def default_thresholds(frame: "Frame"):
+    """(3, 4, >= 5-frame) detection thresholds for this instrument, or None
+    for ``DetectorConfig``'s (simulated WISE) defaults."""
+    return REAL_WISE_THRESHOLDS if _is_real_wise(frame.header) else None
 
 
 def default_aperture_ee(frame: "Frame") -> float:

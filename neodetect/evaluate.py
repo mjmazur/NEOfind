@@ -249,6 +249,7 @@ def summarize(runs, target_far: float = 0.05, name: str = RESULT_NAME, veto: boo
         row["found_errors"] = max(hits, key=lambda m: m["score"])["errors"] if hits else None
 
     per_visit = _per_visit(visit_nulls, visit_false, usable, target_far, veto)
+    guard = _guard(visit_nulls, usable, calibrated)
 
     def table(key, edges, found="found"):
         out = []
@@ -277,6 +278,8 @@ def summarize(runs, target_far: float = 0.05, name: str = RESULT_NAME, veto: boo
     if per_visit:
         per_visit["completeness_by_mag"] = table("mag", mag_edges, "found_visit")
         per_visit["completeness_by_rate"] = table("rate_deg_day", rate_edges, "found_visit")
+    if guard:
+        guard["completeness_by_mag"] = table("mag", mag_edges, "found_guard")
     return {
         "n_null_runs": n_null, "n_asteroid_runs": n_ast_runs, "n_asteroids": len(usable),
         "target_far_per_sequence": target_far, "calibrated_thresholds": calibrated,
@@ -286,7 +289,7 @@ def summarize(runs, target_far: float = 0.05, name: str = RESULT_NAME, veto: boo
         "completeness_by_mag": table("mag", mag_edges),
         "completeness_by_rate": table("rate_deg_day", rate_edges),
         "completeness_by_ideal_snr": table("ideal_snr", snr_edges),
-        "accuracy": accuracy, "per_visit": per_visit, "asteroids": usable,
+        "accuracy": accuracy, "per_visit": per_visit, "guard": guard, "asteroids": usable,
         # Real known objects in injected real data (magnitudes are predictions).
         "known_objects": [{k: row.get(k) for k in ("dir", "id", "mag", "rate_deg_day",
                                                    "n_frames_covered", "ideal_snr",
@@ -334,6 +337,43 @@ def _per_visit(visit_nulls, visit_false, usable, target_far, veto: bool = True) 
     return {"rank": cal["rank"], "ratios": ratios, "false_per_null_run": cal["false_per_copy"],
             "veto": veto, "n_asteroids_vetoed": n_vetoed,
             "far_curve": cal["far_curve"], "visits": visits}
+
+
+def _guard(visit_nulls, usable, calibrated) -> Optional[dict]:
+    """The real-WISE default (``nullcal`` guard mode, one scrambled copy):
+    the global thresholds, raised for a visit whose null level exceeds
+    ``nullcal.GUARD_LEVEL``, plus the artifact veto from that copy. Each
+    null copy is scored with the level and veto of one *other* copy of its
+    visit; asteroids with its first copy's. Marks ``row["found_guard"]``."""
+    if not any(len(c) >= 2 for c in visit_nulls.values()):
+        return None
+    n_false = n_copies = 0
+    visits = {}
+    for v, copies in visit_nulls.items():
+        if len(copies) < 2:
+            continue
+        for i, cands in enumerate(copies):
+            o = copies[(i + 1) % len(copies)]
+            level = nullcal.null_level([[c[0] for c in o]])
+            thr = nullcal.guard_thresholds(level, calibrated)
+            sites = nullcal.veto_sites([o], level)
+            n_copies += 1
+            n_false += sum(nullcal.passes(c[0], c[1], thr) and not nullcal.is_vetoed(c[2], c[3], sites)
+                           for c in cands)
+        level = nullcal.null_level([[c[0] for c in copies[0]]])
+        visits[v] = {"level": level, "factor": max(1.0, level / nullcal.GUARD_LEVEL),
+                     "thresholds": nullcal.guard_thresholds(level, calibrated),
+                     "sites": nullcal.veto_sites([copies[0]], level)}
+    for row in usable:
+        vis = visits.get(row.get("visit"))
+        if vis is None:
+            continue
+        row["found_guard"] = any(
+            nullcal.passes(m["score"], m["n_frames_used"], vis["thresholds"])
+            and not (m.get("radec") and nullcal.is_vetoed(*m["radec"], vis["sites"]))
+            for m in row.get("matches", []))
+    return {"guard_level": nullcal.GUARD_LEVEL, "false_per_null_run": n_false / max(n_copies, 1),
+            "raised": {v: x["factor"] for v, x in visits.items() if x["factor"] > 1.0}}
 
 
 def _mean(values):

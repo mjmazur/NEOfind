@@ -34,14 +34,23 @@ def test_apply_and_passes():
     assert [d["detected"] for d in dets] == [False, True, True, False]
 
 
-def test_null_scrambles_default_on_for_real_wise_only():
+def test_real_wise_defaults_guard_copy_and_thresholds():
     from types import SimpleNamespace
     from astropy.io import fits
-    from neodetect.io import default_null_scrambles
+    from neodetect.io import REAL_WISE_THRESHOLDS, default_null_scrambles, default_thresholds
     h = fits.Header({"TELESCOP": "WISE"})
-    assert default_null_scrambles(SimpleNamespace(header=h)) == 2
+    assert default_null_scrambles(SimpleNamespace(header=h)) == 1
+    assert default_thresholds(SimpleNamespace(header=h)) == REAL_WISE_THRESHOLDS
     h["SIMULATD"] = True
     assert default_null_scrambles(SimpleNamespace(header=h)) == 0
+    assert default_thresholds(SimpleNamespace(header=h)) is None
+
+
+def test_guard_raises_only_noisy_visits():
+    base = {"3": 10.0, "4": 9.25, "5+": 10.25}
+    assert nullcal.guard_thresholds(7.1, base) == base
+    raised = nullcal.guard_thresholds(2 * nullcal.GUARD_LEVEL, base)
+    assert raised == {c: 2 * t for c, t in base.items()}
 
 
 def test_artifact_veto_drops_recurring_site_from_calibration():

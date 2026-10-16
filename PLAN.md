@@ -372,10 +372,19 @@ sweep.py, tests/
     `real_v2`; offline estimate on m4f). So the real-order rate is ~1 event
     in 15 visits, near the 0.05 target, and a depth threshold isn't worth
     its completeness cost on this sample; it needs more visits to tune.
-  - Open from M4: whether to keep
-    per-visit thresholds on by default now that they no longer gain
-    (they cost two extra detector runs per visit); bright fast movers in
-    `real_v2` (0.93–0.96 at W1 14–15).
+  - Per-visit threshold default, examined held out (calibrate on 14
+    visits, score the 15th; m4f): global thresholds 0.044 false per null
+    copy, completeness 0.95 / 0.68 / 0.14 (`real_v1`); per-visit with 2
+    copies 0.089 and 0.93 / 0.63 / 0.13 (it also lowers the bar in the
+    quietest visits: two 8.5 false tracks in r222); 1 copy 0.067. A guard
+    -- global thresholds, raised by level / 8.4 when a visit's one-copy
+    null level exceeds the calibration sample's highest -- 0.044 and 0.95 /
+    0.65 / 0.14. Now the real-WISE default: `io.default_thresholds` (10.0 /
+    9.25 / 10.25), `--null-scrambles` 1, `--null-mode guard` (per-visit
+    still available); `evaluate` reports the guard scheme.
+  - Open from M4: bright fast movers in `real_v2` (0.93–0.96 at W1 14–15);
+    the global thresholds rest on 15 ecliptic visits -- recheck the guard
+    level on new sky (Galactic plane).
 - Real-data limits found in M3, and what became of them:
   - Crowded fields (|b| < ~20°) dominate the false-alarm tail. They also
     saturate the triage cap (`n_refine` = 400), which costs ~20% completeness
