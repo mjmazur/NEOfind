@@ -328,10 +328,11 @@ sweep.py, tests/
       to saved results): global thresholds 10.0 / 9.25 / 10.25, ratios 1.30
       / 1.32 / 1.46, completeness 0.95 / 0.68 / 0.14 (global) and 0.93 /
       0.62 / 0.13 (per visit), 0 false per held-out copy.
-  - Simulated astrometry on realistic paths (`wise_v2`, 127 asteroids found
-    by both fits in 16 runs): curvature fit 0.30" median / 0.49" rms, PA
-    0.17°, vs a straight fit 0.58" / 1.05", 0.23° (paths > 1.5" from a line:
-    0.57" vs 1.70" rms; < 0.5": 0.52" vs 0.48", the noise-fitting cost).
+  - Simulated astrometry on realistic paths (`wise_v2`, all 24 runs, 189
+    asteroids found by both fits): curvature fit 0.29" median / 0.45" rms,
+    PA 0.21°, vs a straight fit 0.55" / 0.99", 0.22° (paths > 1.5" from a
+    line: 0.52" vs 1.67" rms, scores 28.7 vs 25.0; < 0.5": 0.47" vs 0.45",
+    the noise-fitting cost).
     The `wise_v1` regression was that cost alone; `wise_v2` is now the
     simulated astrometry reference.
   - Next: recalibrate `nullcal.NULL_RATIO` and the fixed thresholds on
