@@ -27,6 +27,15 @@ being searched, runs the detector on the copies, and returns the thresholds
 (``neodetect detect --null-scrambles N``, default 2 for real WISE frames:
 on the Oceana visit single copies gave levels of 7.7-8.4, so the median of
 two steadies the thresholds); each copy costs one detector run.
+
+**Artifact veto.** Some false tracks recur at the same place in every
+scrambled copy: a fixed artifact (scattered light along a cutout edge in a
+crowded field) lines up for any frame order, so it is not a moving object.
+A candidate within ``VETO_RADIUS_ARCSEC`` (at the reference time) of a
+scrambled-copy candidate scoring >= ``VETO_MIN_RATIO`` x the null level is
+vetoed. Ratio calibration applies the same veto to each held-out copy using
+the other copies, so one recurring artifact no longer sets the ratios, and
+``evaluate`` measures what the veto costs in completeness.
 """
 
 import dataclasses
@@ -41,6 +50,8 @@ NULL_RANK = 5
 # visit). Recalibrate with ``neodetect evaluate`` (``per_visit.ratios``)
 # after detector changes.
 NULL_RATIO = {"3": 1.81, "4": 1.53, "5+": 1.39}
+VETO_RADIUS_ARCSEC = 60.0
+VETO_MIN_RATIO = 1.2
 
 
 def frame_class(n_used: int) -> str:
@@ -67,10 +78,27 @@ def passes(score: float, n_used: int, thr: Dict[str, float]) -> bool:
     return score >= thr[frame_class(n_used)]
 
 
-def calibrate_ratios(visit_nulls: Dict[str, List[List[Tuple[float, int]]]], target_far: float,
-                     rank: int = NULL_RANK) -> Optional[dict]:
+def veto_sites(copies, level: float, min_ratio: float = VETO_MIN_RATIO) -> np.ndarray:
+    """(ra, dec) of the scrambled-copy candidates that can veto: ``copies``
+    is a list of [(score, n_used, ra_deg, dec_deg), ...] per copy."""
+    sites = [(c[2], c[3]) for cands in copies for c in cands
+             if len(c) >= 4 and c[0] >= min_ratio * level]
+    return np.asarray(sites, float).reshape(-1, 2)
+
+
+def is_vetoed(ra: float, dec: float, sites: np.ndarray,
+              radius_arcsec: float = VETO_RADIUS_ARCSEC) -> bool:
+    if not len(sites):
+        return False
+    dra = (sites[:, 0] - ra + 180.0) % 360.0 - 180.0
+    d = np.hypot(dra * np.cos(np.radians(dec)), sites[:, 1] - dec) * 3600.0
+    return bool(np.any(d < radius_arcsec))
+
+
+def calibrate_ratios(visit_nulls: Dict[str, List[List[Tuple]]], target_far: float,
+                     rank: int = NULL_RANK, veto: bool = True) -> Optional[dict]:
     """Ratios per frame class from scrambled copies, ``visit -> [[(score,
-    n_used), ...] per copy]``. Each copy's candidates are scaled by the level
+    n_used[, ra_deg, dec_deg]), ...] per copy]`` (positions enable the veto). Each copy's candidates are scaled by the level
     of the other copies of its visit (leave one out), and each class gets a
     third of the ``target_far`` budget (false detections per copy). None
     if no visit has two copies."""
@@ -80,10 +108,14 @@ def calibrate_ratios(visit_nulls: Dict[str, List[List[Tuple[float, int]]]], targ
         if len(copies) < 2:
             continue
         for i, cands in enumerate(copies):
-            level = null_level([[s for s, _ in o] for j, o in enumerate(copies) if j != i], rank)
+            others = [o for j, o in enumerate(copies) if j != i]
+            level = null_level([[c[0] for c in o] for o in others], rank)
+            sites = veto_sites(others, level) if veto else np.zeros((0, 2))
             n_copies += 1
-            for s, n in cands:
-                scaled[frame_class(n)].append(s / level)
+            for c in cands:
+                if len(c) >= 4 and is_vetoed(c[2], c[3], sites):
+                    continue
+                scaled[frame_class(c[1])].append(c[0] / level)
     if not n_copies:
         return None
     grid = np.round(np.arange(1.0, 6.0001, 0.01), 2)
@@ -125,18 +157,25 @@ def self_calibrate(seq, cfg=None, n: int = 1, seed: int = 0, ratios=None,
     for i in range(n):
         log(f"null calibration: scrambled copy {i + 1}/{n}")
         res = detect(scrambled(seq, rng), cfg)
-        copies.append([d["score"] for d in res.detections])
-    level = null_level(copies, rank)
+        copies.append([(d["score"], d["n_frames_used"], d["ra_deg"], d["dec_deg"])
+                       for d in res.detections])
+    level = null_level([[c[0] for c in cp] for cp in copies], rank)
     thr = thresholds(level, ratios)
+    sites = veto_sites(copies, level)
     log(f"null level {level:.2f} (rank {rank}, {n} copies) -> thresholds "
-        + ", ".join(f"{c} frames {t:.2f}" for c, t in thr.items()))
+        + ", ".join(f"{c} frames {t:.2f}" for c, t in thr.items())
+        + f"; {len(sites)} artifact veto sites")
     return {"n_copies": n, "seed": seed, "rank": rank, "level": level,
             "ratios": dict(ratios or NULL_RATIO), "thresholds": thr,
-            "copy_top_scores": [sorted(c, reverse=True)[:rank] for c in copies]}
+            "veto_sites": sites.tolist(),
+            "copy_top_scores": [sorted((c[0] for c in cp), reverse=True)[:rank] for cp in copies]}
 
 
-def apply(detections: List[dict], thr: Dict[str, float]) -> int:
-    """Re-flag ``detected`` with per-visit thresholds; the number detected."""
+def apply(detections: List[dict], thr: Dict[str, float], sites=None) -> int:
+    """Re-flag ``detected`` with per-visit thresholds and the artifact veto
+    (``sites``: (ra, dec) from ``veto_sites``); the number detected."""
+    sites = np.asarray(sites if sites is not None else [], float).reshape(-1, 2)
     for d in detections:
-        d["detected"] = passes(d["score"], d["n_frames_used"], thr)
+        d["artifact_veto"] = bool(len(sites)) and is_vetoed(d["ra_deg"], d["dec_deg"], sites)
+        d["detected"] = passes(d["score"], d["n_frames_used"], thr) and not d["artifact_veto"]
     return sum(d["detected"] for d in detections)

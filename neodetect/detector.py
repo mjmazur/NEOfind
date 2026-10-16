@@ -50,7 +50,14 @@ class DetectorConfig:
     min_frames: int = 3
     clip_sigma: float = 4.0
     frac_tol: float = 0.35  # max fractional flux variation between frames (~0.3 mag)
-    stationary_fwhm: float = 2.0  # reject motion < this many PSF FWHM over the span
+    stationary_fwhm: float = 2.0  # search no slower than this many PSF FWHM over the span
+    # Reject candidates whose path moves less than this many FWHM over the
+    # visit (largest separation of its positions at the frame times, so a
+    # curved path can't pass on its speed at t_ref). On real NEOWISE the top
+    # scrambled-copy false tracks after the artifact veto were slow tracks on
+    # bright-star residuals moving 2.9-3.7 FWHM over a 33 h visit (0.003-0.005
+    # deg/day); the slowest of 87 known asteroids in those visits moved 0.084.
+    min_path_fwhm: float = 4.0
     min_consistency_p: float = 1e-3  # reject tracks whose per-frame fluxes disagree
     # Path curvature fitted in refinement, bound per axis by
     # max(accel_max, accel_per_rate * rate, accel_per_rate2 * rate^2) in
@@ -77,6 +84,9 @@ class DetectorConfig:
     # Repeat the cosmic-ray tests with the static sky subtracted (``register``):
     # a hit on a star is as broad as the star in the first pass.
     sharp_second_pass: bool = True
+    # In the same pass, mask long thin features (scattered-light streaks from
+    # bright stars beyond a cutout edge, satellite trails; ``cosmics.streak_mask``).
+    mask_streaks: bool = True
 
     # Deflate weights where a frame's local SNR scatter exceeds the noise
     # model (scattered light, crowded-field edges; ``preprocess``); 0 = off.
@@ -140,6 +150,12 @@ def _accel_bound_px(cfg: DetectorConfig, speed_px_day: float, scale_arcsec: floa
                cfg.accel_per_rate2 * rate * rate) / scale_arcsec
 
 
+def _path_extent(track: Track, times) -> float:
+    """Largest separation (grid px) between the path's positions at ``times``."""
+    x, y = track.position(np.asarray(times))
+    return float(np.max(np.hypot(x[:, None] - x[None], y[:, None] - y[None])))
+
+
 def _straight(track: Track, times) -> Track:
     """The straight track through ``track``'s positions at ``times`` (least
     squares): dropping the acceleration alone would move a track far from
@@ -163,7 +179,7 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
     timing = {}
     t = time.time()
     reg = register(seq, ref=cfg.ref_frame, region=cfg.region,
-                   second_pass=cfg.sharp_second_pass)
+                   second_pass=cfg.sharp_second_pass, streaks=cfg.mask_streaks)
     timing["register_s"] = time.time() - t
     log(f"registered {reg.n} frames onto a {reg.shape[1]}x{reg.shape[0]} grid "
         f"({timing['register_s']:.1f}s), outlier px masked per frame: {reg.n_outlier_px}")
@@ -185,6 +201,7 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
     scale = reg.pixel_scale_arcsec
     fwhm_px = float(np.median(pre.psf_sigma_px)) * 2.3548
     v_stationary = cfg.stationary_fwhm * fwhm_px / max(span, 1e-6)
+    min_path = cfg.min_path_fwhm * fwhm_px
     stats = {"grid_shape": list(reg.shape), "pixel_scale_arcsec": scale,
              "time_span_h": span * 24.0, "t_ref_mjd": t_ref,
              "noise_alpha": pre.alpha.tolist(), "noise_beta": pre.beta,
@@ -250,7 +267,7 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
             r = evaluator.refine(_straight(r.track, times[r.used]), accel_max=0.0)
         if r is None or r.score < cfg.report_threshold:
             continue
-        if r.track.speed < v_stationary or r.n_used < cfg.min_frames:
+        if _path_extent(r.track, times) < min_path or r.n_used < cfg.min_frames:
             continue
         if r.consistency_p(cfg.frac_tol) < cfg.min_consistency_p:
             n_inconsistent += 1

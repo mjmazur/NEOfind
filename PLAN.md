@@ -251,9 +251,49 @@ sweep.py, tests/
     catches these hits. The 7 worst simulated nulls go from 11.6 / 10.8 /
     9.9 / 9.9 / 9.9 / 9.9 / 9.8 to 7.8 / 7.2 / 9.9 / 7.9 / 8.5 / 7.9 / 9.8;
     Oceana, Lachesis and 33 injections score the same; +2–5 s per visit.
-  - Next: rerun all three sets with the second pass, then recalibrate
-    `nullcal.NULL_RATIO` and the fixed thresholds, deciding how to keep the
-    one v012 artifact from setting them.
+  - With the second pass (`detections_m4c.json`), simulated `wise_v1`:
+    thresholds 9.0 / 9.25 / 8.75 (M2 10.25 / 9.5 / 8.25), completeness
+    0.88 / 0.40 at W1 15–15.5 / 15.5–16, 2–5 deg/day 0.55.
+  - Simulated astrometry (0.45" rms vs M2 0.37", PA 0.19° vs 0.13°) is the
+    curvature fit: simulated asteroids move in straight lines (truth
+    acceleration 0), and on faint tracks the two extra parameters fit noise
+    (median 12"/day² fitted, 17 tracks at the bound with 1.09" rms).
+    Keeping curvature only when it raises S² by ≥ 9 helps the simulations
+    (0.69" → 0.56", PA 0.27° → 0.17° on 8 runs) but hurts real curved
+    injections (`real_v2`, 0.58" → 0.62" on 5 visits), so the detector is
+    unchanged. On the 64 simulated asteroids found by all three, M3 gives
+    0.30" median / 0.51" rms / PA 0.17°, the curvature fit 0.38 / 0.69 /
+    0.27, and curvature-if-significant 0.30 / 0.56 / 0.17: the fit accounts
+    for the whole regression. So the simulator now curves its asteroids
+    (`--motion orbit`, two-body as for `real_v2` injections), and
+    `sims/sweeps/wise_v2` is `wise_v1` with orbit motion (same seeds, shared
+    null runs) for measuring astrometry on realistic paths.
+  - The v012 calibration artifact is scattered light from a very bright star
+    just past the cutout's right edge: a fan of horizontal streaks ~200 px
+    long in 3 of the 7 frames covering that spot, fixed on the detector, so
+    their segments line up as a slow track in every scrambled copy. Fixes:
+    - Streak mask in the second pass (`cosmics.streak_mask`). Real WISE noise
+      is correlated along rows (line-mean scatter 0.22 vs 0.165 in other
+      directions on v012), so the threshold is relative to each frame's own
+      scatter per direction. Compact round sources (5–100 px above 5σ) are
+      left out of the line sums, or a line beside Oceana picked up its wings
+      and masked its core. v012 copy 2: 17.5 → 13.5; Oceana, injections
+      into v012 unchanged; nothing masked on simulations.
+    - Artifact veto (`nullcal`): candidates within 60" of a scrambled-copy
+      candidate scoring ≥ 1.2× the null level are rejected; calibration
+      applies it to each held-out copy using the other copies.
+    - Stationary rejection on the path's extent (≥ 4 FWHM over the visit,
+      was the speed at t_ref ≥ 2 FWHM): after the veto the ≥ 5-frame ratio
+      was set by slow tracks on bright-star residuals moving 2.9–3.7 FWHM
+      over 33 h, one only because of fitted curvature. The slowest of 87
+      known asteroids in the real visits moves 0.084 deg/day (~70 FWHM).
+    On the m4b detections, veto + path cut alone give ratios 1.48 / 1.36 /
+    1.47 (was 1.63 / 1.39 / 1.75), per-visit completeness at 15.5–16 /
+    16–16.5 of 0.53 / 0.10 on `real_v1` (0.47 / 0.00) and 0.65 / 0.23 on
+    `real_v2` (0.57 / 0.06), 0 false per held-out copy; the veto cost 1 and
+    3 injections.
+  - Next: rerun all three sets with streak mask, veto and path cut, then
+    recalibrate `nullcal.NULL_RATIO` and the fixed thresholds.
 - Real-data limits found in M3, and what became of them:
   - Crowded fields (|b| < ~20°) dominate the false-alarm tail. They also
     saturate the triage cap (`n_refine` = 400), which costs ~20% completeness
@@ -293,8 +333,7 @@ sweep.py, tests/
   frames (2–5, vs 6–8 for real detections), but a cut on that costs too much
   completeness (≥ 4 frames: −32% false alarms, −11% real).
 - Open items for M4+: WISE artifact tables (`-art`: spikes, halos,
-  latents) as masks; a template-depth-dependent threshold; slow tracks on bright-star
-  residuals in crowded fields; real WISE PSF (wings) in both simulator and detector;
+  latents) as masks; a template-depth-dependent threshold; real WISE PSF (wings) in both simulator and detector;
   ground-preset PSF matching between frames; trailed templates for fast
   movers in long exposures.
 

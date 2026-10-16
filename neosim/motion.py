@@ -2,9 +2,13 @@
 
 Each asteroid moves on a quadratic path in the tangent plane centered on the
 field target:  p(t) = p0 + v (t - t_ref) + a (t - t_ref)^2 / 2,  with t_ref the
-reference frame's mid-exposure time. Over the ~1-day span of a WISE visit (or
-a few hours from the ground) main-belt motion is linear to well under a PSF
-width; the acceleration term stands in for the curvature of nearby NEOs.
+reference frame's mid-exposure time; the acceleration term is an ad hoc
+curvature (``--accel``). With ``motion = "orbit"`` asteroids instead move on
+heliocentric two-body orbits seen from Earth (``orbit.OrbitMover``), set up
+from the same drawn position, rate and direction at t_ref: their paths curve
+as real ones do (~15"/day^2 for a main-belt asteroid at quadrature, up to
+~3" from a straight line over a 1.4-day WISE visit; NEOs far more), which a
+detector fitting curvature has to be tested on.
 
 Brightness is the mean magnitude plus a double-peaked rotational light curve,
 which matters here because frames are hours apart:
@@ -12,8 +16,8 @@ which matters here because frames are hours apart:
 """
 
 import math
-from dataclasses import dataclass, asdict
-from typing import List
+from dataclasses import dataclass, asdict, field
+from typing import List, Optional
 
 import numpy as np
 
@@ -61,8 +65,47 @@ class Asteroid:
         return d
 
 
+@dataclass
+class OrbitAsteroid(Asteroid):
+    """An ``Asteroid`` whose sky path comes from a two-body orbit (``mover``);
+    the tangent-plane terms describe its motion at t_ref only."""
+    mover: Optional[object] = field(default=None, repr=False)
+
+    def radec(self, t_mjd, t_ref: float, ra0_deg: float, dec0_deg: float):
+        ra, dec = self.mover.radec(t_mjd)
+        if np.ndim(t_mjd) == 0:
+            return float(ra[0]), float(dec[0])
+        return ra, dec
+
+    def to_dict(self) -> dict:
+        d = {k: getattr(self, k) for k in Asteroid.__dataclass_fields__}
+        d["accel_arcsec_hr2"] = [0.0, 0.0]  # not quadratic: see "orbit"
+        d["orbit"] = self.mover.to_dict()
+        return d
+
+
+def _orbit_movers(asteroids: List[Asteroid], ra0_deg, dec0_deg, t_ref, np_rng) -> List[Asteroid]:
+    """Two-body versions of ``asteroids`` (distance from the rate; radial
+    velocity the observer's own along the line of sight plus up to 10 km/s,
+    as for ``neowise.inject``)."""
+    from .orbit import (KM_S_TO_AU_DAY, OrbitMover, draw_distance,
+                        earth_heliocentric_velocity, sky_basis)
+    v_obs = earth_heliocentric_velocity(t_ref)
+    out = []
+    for a in asteroids:
+        ra, dec = (float(v) for v in tangent_to_equatorial(a.xi0, a.eta0, ra0_deg, dec0_deg))
+        los = sky_basis(ra, dec)[0]
+        vr = -float(v_obs @ los) / KM_S_TO_AU_DAY + np_rng.uniform(-10.0, 10.0)
+        mover = OrbitMover.from_sky(a.id, a.mag, ra, dec, a.rate_deg_day, a.pa_deg,
+                                    draw_distance(a.rate_deg_day, np_rng), vr, t_ref)
+        out.append(OrbitAsteroid(**{k: getattr(a, k) for k in Asteroid.__dataclass_fields__},
+                                 mover=mover))
+    return out
+
+
 def build_population(pop: PopulationConfig, inst: InstrumentConfig, ra0_deg: float,
-                     dec0_deg: float, ref_wcs, np_rng: np.random.Generator) -> List[Asteroid]:
+                     dec0_deg: float, ref_wcs, np_rng: np.random.Generator,
+                     t_ref: Optional[float] = None) -> List[Asteroid]:
     n = pop.n_asteroids
     if n <= 0:
         return []
@@ -98,11 +141,18 @@ def build_population(pop: PopulationConfig, inst: InstrumentConfig, ra0_deg: flo
                                     math.log(pop.lc_period_max_h), n))
     phases = np_rng.uniform(0.0, 2.0 * math.pi, n)
 
-    return [Asteroid(id=i, mag=float(mags[i]), rate_deg_day=float(rates[i]),
+    out = [Asteroid(id=i, mag=float(mags[i]), rate_deg_day=float(rates[i]),
                      pa_deg=float(pas[i]), xi0=float(xi0[i]), eta0=float(eta0[i]),
                      vxi=float(rate_rad[i] * math.sin(pa_rad[i])),
                      veta=float(rate_rad[i] * math.cos(pa_rad[i])),
                      axi=float(accs[i, 0]), aeta=float(accs[i, 1]),
                      lc_amp=float(amps[i]), lc_period_h=float(periods[i]),
                      lc_phase=float(phases[i]))
-            for i in range(n)]
+           for i in range(n)]
+    if pop.motion == "orbit":
+        if t_ref is None:
+            raise ValueError("orbit motion needs t_ref")
+        out = _orbit_movers(out, ra0_deg, dec0_deg, t_ref, np_rng)
+    elif pop.motion != "linear":
+        raise ValueError(f"unknown motion {pop.motion!r} (linear, orbit)")
+    return out

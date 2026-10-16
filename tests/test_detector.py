@@ -164,3 +164,34 @@ def test_second_pass_masks_cosmic_ray_on_star_but_not_asteroid():
         assert reg.n_outlier_px[3] == 0, "asteroid on a star masked"
     # The star broadens the hit past the first pass; with the star subtracted it is sharp.
     assert valid[False] and not valid[True]
+
+
+def test_streak_mask_flags_lines_not_points_or_noise():
+    from neodetect.cosmics import streak_mask
+
+    rng = np.random.default_rng(3)
+    z = rng.normal(0.0, 1.0, (200, 200))
+    ok = np.ones(z.shape, bool)
+    clean = streak_mask(z, ok)
+    # A faint horizontal streak (z ~1.5 per pixel, 3 px wide, 120 px long) ...
+    z[99:102, 40:160] += 1.5
+    # ... and bright point sources, in a row and alone.
+    for x in (20, 30, 40, 50, 60):
+        _add_psf(z, x, 170.0, 400.0)
+    _add_psf(z, 150.0, 40.0, 5000.0)
+    m = streak_mask(z, ok)
+    assert not clean.any()
+    assert m[100, 60:140].all()
+    assert not m[30:50, 130:170].any()
+    assert m[160:180, :].sum() < 50  # a row of stars is not a streak
+
+
+def test_path_extent_counts_curvature():
+    from neodetect.detector import _path_extent
+    from neodetect.trackfit import Track
+
+    times = np.linspace(0.0, 1.0, 11)
+    straight = Track(0.0, 0.0, 3.0, 0.0, 0.5)
+    curved = Track(0.0, 0.0, 0.0, 0.0, 0.5, ax=24.0, ay=0.0)
+    assert abs(_path_extent(straight, times) - 3.0) < 1e-9
+    assert abs(_path_extent(curved, times) - 3.0) < 1e-9  # 0.5 * 24 * 0.5^2 each way: 0 to 3

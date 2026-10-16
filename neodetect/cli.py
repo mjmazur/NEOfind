@@ -115,7 +115,7 @@ def cmd_detect(args) -> int:
         from . import nullcal
         ratios = dict(zip(nullcal.FRAME_CLASSES, args.null_ratio)) if args.null_ratio else None
         cal = nullcal.self_calibrate(seq, cfg, n=n_null, ratios=ratios, log=log)
-        nullcal.apply(doc["detections"], cal["thresholds"])
+        nullcal.apply(doc["detections"], cal["thresholds"], cal["veto_sites"])
         doc["null_calibration"] = cal
     doc["frames"] = [{"path": f.path, "mjd": f.mjd} for f in seq.frames]
     if seq.truth:
@@ -183,13 +183,15 @@ def cmd_evaluate(args) -> int:
         print(f"\nper-visit thresholds (null level = rank-{pv['rank']} score on scrambled copies): "
               f"level x {r['3']:.2f} / {r['4']:.2f} / {r['5+']:.2f} for 3 / 4 / >=5 frames, "
               f"{pv['false_per_null_run']:.3f} false per held-out null run")
+        if pv.get("veto"):
+            print(f"  artifact veto (nullcal): {pv['n_asteroids_vetoed']} asteroids lost to it")
         print(f"  -> neodetect detect --null-ratio {r['3']:.2f} {r['4']:.2f} "
               f"{r['5+']:.2f}")
-        print(f"  {'visit':>40} {'level':>6} {'thr 5+':>6} {'n':>4} {'complete':>8}")
+        print(f"  {'visit':>40} {'level':>6} {'thr 5+':>6} {'vetos':>5} {'n':>4} {'complete':>8}")
         for v, x in pv["visits"].items():
             c = f"{x['completeness']:8.2f}" if x["completeness"] is not None else "       -"
             print(f"  {v[-40:]:>40} {x['level']:6.2f} {x['thresholds']['5+']:6.2f} "
-                  f"{x['n_asteroids']:4d} {c}")
+                  f"{x.get('n_veto_sites', 0):5d} {x['n_asteroids']:4d} {c}")
         for name, key in (("magnitude", "completeness_by_mag"), ("rate deg/day", "completeness_by_rate")):
             print(f"\n{name:>14} {'n':>4} {'complete':>8}   (per-visit thresholds)")
             for c in pv[key]:

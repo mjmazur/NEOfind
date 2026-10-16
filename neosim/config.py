@@ -75,6 +75,7 @@ class PopulationConfig(_Section):
     rate_deg_day: Optional[float] = None  # fix every asteroid's rate
     pa_deg: Optional[float] = None  # fix every asteroid's direction of motion (E of N)
     accel_rms_arcsec_hr2: float = 0.0  # rms per-axis sky-plane acceleration (curvature)
+    motion: str = "linear"  # "linear" (quadratic path) or "orbit" (two-body, curves as real paths do)
     lc_amp_max: float = 0.5  # rotational light curve peak-to-peak amplitude, uniform in [0, max]
     lc_period_min_h: float = 2.0
     lc_period_max_h: float = 20.0

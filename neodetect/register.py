@@ -37,7 +37,8 @@ from astropy.wcs import WCS
 from scipy import ndimage
 from scipy.ndimage import map_coordinates
 
-from .cosmics import estimate_sky, measured_sharpness, sharp_outliers, star_sharpness_limits
+from .cosmics import (estimate_sky, measured_sharpness, sharp_outliers, star_sharpness_limits,
+                      streak_mask)
 from .io import Frame, Sequence, default_psf_fwhm_arcsec, robust_sigma
 from .psf import FWHM_TO_SIGMA
 
@@ -182,11 +183,12 @@ def _static_sky(data, valid):
 
 
 def _second_pass(f: Frame, grid: WCS, static, scale, psf_sigma_native, outlier_nsig, resid, sig,
-                 bad, limits):
+                 bad, limits, streaks=True):
     """Sharp outliers in ``resid`` minus the static sky (grid, mapped back to
     native pixels), not already in ``bad``: hits on stars, where the star
-    broadens a cosmic ray enough to pass the first pass's tests. Returns
-    (hit mask, native x, y of the hits on the grid)."""
+    broadens a cosmic ray enough to pass the first pass's tests; with
+    ``streaks``, also long thin features (``cosmics.streak_mask``). Returns
+    (mask, native x, y of its pixels on the grid, number of streak px)."""
     h, w = f.shape
     yy, xx = np.mgrid[0:h, 0:w]
     ra, dec = f.wcs.all_pix2world(xx.ravel(), yy.ravel(), 0)
@@ -211,12 +213,18 @@ def _second_pass(f: Frame, grid: WCS, static, scale, psf_sigma_native, outlier_n
                                     + (STATIC_RESID_FRAC * np.where(known, tn, 0.0)) ** 2),
                      np.inf).astype(np.float32)
     hits = sharp_outliers(diff, noise, ~known, psf_sigma_native, nsig=outlier_nsig, limits=limits)
+    n_streak = 0
+    if streaks:
+        st = streak_mask(diff / noise, known) & ~hits
+        n_streak = int(st.sum())
+        hits |= st
     hits &= ~bad
-    return hits, gx.reshape(h, w)[hits], gy.reshape(h, w)[hits]
+    return hits, gx.reshape(h, w)[hits], gy.reshape(h, w)[hits], n_streak
 
 
 def register(seq: Sequence, ref: Optional[int] = None, region=None,
-             outlier_nsig: float = 4.0, second_pass: bool = True, log=None) -> Registered:
+             outlier_nsig: float = 4.0, second_pass: bool = True, streaks: bool = True,
+             log=None) -> Registered:
     log = log or (lambda *a: None)
     frames = seq.frames
     n = len(frames)
@@ -286,13 +294,14 @@ def register(seq: Sequence, ref: Optional[int] = None, region=None,
         # star looks as broad as the star in the first pass. Its grid samples
         # (every one whose cubic stencil touches a hit) become invalid.
         static = _static_sky(data, valid)
-        n2 = []
+        n2, n_streak = [], []
         for k, f in enumerate(frames):
             resid, sig, bad, limits, sig_native = natives[k]
             natives[k] = None
-            hits, hx, hy = _second_pass(f, grid, static, scale[k], sig_native, outlier_nsig,
-                                        resid, sig, bad, limits)
+            hits, hx, hy, n_st = _second_pass(f, grid, static, scale[k], sig_native, outlier_nsig,
+                                              resid, sig, bad, limits, streaks)
             n2.append(int(hits.sum()))
+            n_streak.append(n_st)
             if not n2[-1]:
                 continue
             inv = np.zeros((gh, gw), bool)
@@ -306,7 +315,7 @@ def register(seq: Sequence, ref: Optional[int] = None, region=None,
             data[k][inv] = 0.0
             var[k][inv] = 0.0
             n_out[k] += n2[-1]
-        log(f"  second pass (static sky subtracted): {n2} more outlier px masked")
+        log(f"  second pass (static sky subtracted): {n2} more px masked, of which streaks {n_streak}")
 
     return Registered(wcs=grid, data=data, var=var, valid=valid, times=seq.times,
                       psf_sigma_px=psf_sigma, flux_scale=scale, magzp=zp_ref,

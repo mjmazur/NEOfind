@@ -58,7 +58,11 @@ Each FITS header carries a TAN WCS plus `MJD-OBS` (exposure start),
   random along-scan offset, so frames overlap only partly and an asteroid
   can leave the field partway through. The span is ~17 h for 12 frames.
 - **Motion.** Each asteroid moves on a quadratic path in the tangent plane about the target
-  (`--accel` for curvature). Rates are log-uniform between `--rate-min` and
+  (`--accel` for ad hoc curvature), or with `--motion orbit` on a heliocentric
+  two-body orbit seen from Earth, set up from the same drawn position, rate and
+  direction (distance from the rate, as for injections into real data): paths
+  then curve as real ones do (~12"/day² for main-belt distances, ~250"/day² at
+  0.4 AU). Rates are log-uniform between `--rate-min` and
   `--rate-max` deg/day. Trailing within an exposure is integrated, so it
   shows up only when physically significant (fast movers from the ground).
   Brightness includes a double-peaked rotational light curve.
@@ -108,6 +112,14 @@ Pipeline:
    median of the registered frames, mapped back to native pixels)
    subtracted: a cosmic ray on a star is as broad as the star in the first
    pass, and these hits set the top of the simulated false-alarm tail.
+   The same pass masks long thin features (`cosmics.streak_mask`):
+   scattered-light streaks from bright stars beyond a cutout edge, and
+   satellite trails. Significance clipped at ±1.5 is averaged along 41-px
+   lines in 16 directions; a line is masked where its mean is ≥ 0.8 and
+   ≥ 6× the frame's own scatter in that direction (real WISE noise is
+   correlated along rows), and low across it. Compact sources (≤ 100 px
+   above 5σ, grown 6 px) are left out and never masked, so asteroids
+   stay; on simulations nothing is masked.
 2. **Registration** (`register.py`): resample every frame (cubic spline)
    onto one TAN grid covering the union of footprints, scaled to a common
    zero point; per-frame validity tracks partial coverage. Masked pixels are
@@ -148,7 +160,10 @@ Pipeline:
    of the PSF on valid pixels). Otherwise the fit can bend the path toward
    valid pixels to keep a partly masked frame; that put Lachesis's
    positions 0.8″ off.
-6. **Vetting** (`detector.py`): stationary sources rejected; per-frame
+6. **Vetting** (`detector.py`): paths moving less than 4 PSF FWHM over the
+   visit are rejected (the largest separation of the path's positions, so
+   curvature counts; 0.005 deg/day over a 33 h NEOWISE visit, while the
+   slowest of 87 known asteroids in our visits moves 0.084); per-frame
    fluxes must be consistent with one source (χ² p ≥ 1e-3, allowing 35%
    variability); a frame already claimed by a stronger track is released.
    Detection thresholds depend on how many frames a track uses (short
@@ -175,7 +190,11 @@ varies far more between visits than one global threshold can follow. So
 The thresholds are that level × 1.81 / 1.53 / 1.39 for 3 / 4 / ≥5-frame
 tracks (`--null-ratio`). The factors are calibrated on `sims/real_v1` so
 that held-out scrambled copies give ≤ 0.05 false detections per visit.
-Each copy costs one detector run.
+Each copy costs one detector run. The copies also give an **artifact
+veto**: a candidate within 60″ (at the reference time) of a scrambled-copy
+candidate scoring ≥ 1.2× the null level is rejected, as something that
+recurs whatever the frame order isn't moving. Without it one scattered-light
+artifact in one visit set the ≥ 5-frame factor.
 
 **Reporting** (`report.py`): `--ades FILE` writes ADES PSV for the MPC,
 one row per frame a detection uses: the track position at that frame's

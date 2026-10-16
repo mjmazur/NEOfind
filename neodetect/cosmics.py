@@ -38,6 +38,7 @@ from functools import lru_cache
 import numpy as np
 from scipy import ndimage
 
+from .io import robust_sigma
 from .psf import profile_1d
 
 
@@ -256,3 +257,90 @@ def sharp_model_hits(r: np.ndarray, s: np.ndarray, bad: np.ndarray, psf_sigma: f
     is_hit = best[1] - best[0] > dchi2
     out[ys[is_hit], xs[is_hit]] = True
     return ndimage.binary_dilation(out, structure=np.ones((3, 3), bool))
+
+
+STREAK_LENGTH = 41  # px: line-filter length
+STREAK_DIRECTIONS = 16  # orientations over 180 deg (5.6 deg max misalignment: 2 px at the ends)
+STREAK_CLIP = 1.5  # |z| clipped here: a few bright points can't make a line
+STREAK_MEAN_MIN = 0.8  # mean clipped z along the line (~6 sigma for white clipped noise)...
+STREAK_NSIG = 6.0  # ...and this many times the frame's own scatter of line means in that
+#                    direction (real WISE noise is correlated along rows: 0.22 vs 0.165 on
+#                    a crowded field, flat 0.13 on simulations)
+STREAK_PERP_MAX = 0.4  # ...and at most this across it (isotropic glow, crowding)
+STREAK_MIN_COVERAGE = 0.7  # fraction of the line on usable pixels
+STREAK_SOURCE_Z = 5.0  # compact sources above this are left out of the line sums:
+STREAK_SOURCE_PX = 100  # ...connected regions of this size (an asteroid above 5 sigma
+STREAK_SOURCE_MIN_PX = 5  # covers more than a few px; a streak breaks into 1-4 px pieces),
+STREAK_SOURCE_GROW = 6  # ...grown by this many px (wings of a bright one)
+STREAK_SOURCE_ELONGATION = 2.0  # ...and round (a bright piece of a streak is elongated)
+
+
+@lru_cache(maxsize=8)
+def _line_offsets(length: int, n_dir: int):
+    """Per direction, the unique integer (dy, dx) offsets of a centered line."""
+    c = length // 2
+    out = []
+    for th in np.arange(n_dir) * np.pi / n_dir:
+        t = np.arange(-c, c + 1)
+        pts = {(int(round(s * math.sin(th))), int(round(s * math.cos(th)))) for s in t}
+        out.append(sorted(pts))
+    return out
+
+
+def _line_mean(zc, ok, offsets):
+    num = np.zeros_like(zc)
+    cnt = np.zeros_like(zc)
+    for dy, dx in offsets:
+        num += _shift(zc, dy, dx)
+        cnt += _shift(ok, dy, dx)
+    return np.where(cnt >= STREAK_MIN_COVERAGE * len(offsets), num / np.maximum(cnt, 1.0), 0.0)
+
+
+def streak_mask(z: np.ndarray, ok: np.ndarray, length: int = STREAK_LENGTH,
+                n_dir: int = STREAK_DIRECTIONS) -> np.ndarray:
+    """Pixels on long thin positive features (scattered-light streaks and
+    spikes from bright stars, satellite trails) in a significance map ``z``
+    with the static sky subtracted. A point source, however bright, adds at
+    most ``STREAK_CLIP`` per pixel over a few pixels of a line, and an
+    extended excess (glow) is high across the line as well as along it.
+    Compact sources (``STREAK_SOURCE_*``) are left out of the line sums, so
+    an asteroid's own wings can't make a line through it."""
+    # Compact sources: a line beside a bright asteroid would otherwise pick up
+    # its clipped wings (with row-correlated noise, enough for Oceana).
+    lab, n_lab = ndimage.label(ok & (z > STREAK_SOURCE_Z))
+    src = np.zeros(z.shape, bool)
+    if n_lab:
+        size = np.bincount(lab.ravel())
+        keep = np.zeros(n_lab + 1, bool)
+        for i, sl in enumerate(ndimage.find_objects(lab), 1):
+            if sl is None or not STREAK_SOURCE_MIN_PX <= size[i] <= STREAK_SOURCE_PX:
+                continue
+            ys, xs = np.nonzero(lab[sl] == i)
+            ev = np.linalg.eigvalsh(np.cov(np.vstack([ys, xs])) + 1e-3 * np.eye(2))
+            keep[i] = ev[1] <= STREAK_SOURCE_ELONGATION ** 2 * ev[0]
+        src = ndimage.binary_dilation(keep[lab], iterations=STREAK_SOURCE_GROW)
+    # Left-out pixels count as zero, not as missing: a line through a source is
+    # diluted, not disqualified.
+    okf = ok.astype(np.float32)
+    zc = np.where(ok & ~src, np.clip(z, -STREAK_CLIP, STREAK_CLIP), 0.0).astype(np.float32)
+    offs = _line_offsets(length, n_dir)
+    means = [_line_mean(zc, okf, o) for o in offs]
+    out = np.zeros(z.shape, bool)
+    for i, m in enumerate(means):
+        sel = m[::3, ::3]
+        sel = sel[sel != 0]
+        floor = STREAK_NSIG * robust_sigma(sel) if sel.size > 1000 else 0.0
+        centers = ((m >= max(STREAK_MEAN_MIN, floor))
+                   & (means[(i + n_dir // 2) % n_dir] <= STREAK_PERP_MAX))
+        if not centers.any():
+            continue
+        cf = centers.astype(np.float32)
+        painted = np.zeros_like(cf)
+        for dy, dx in offs[i]:
+            painted += _shift(cf, -dy, -dx)  # the whole line through each center
+        out |= painted > 0
+    if out.any():
+        out = ndimage.binary_dilation(out, structure=np.ones((3, 3), bool))
+    # Compact sources on a line found without them are masked with it (knots
+    # of a scattered-light streak are as compact as an asteroid).
+    return out & ok

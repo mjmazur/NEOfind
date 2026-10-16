@@ -187,7 +187,7 @@ FRAME_CLASSES = nullcal.FRAME_CLASSES
 frame_class = nullcal.frame_class
 
 
-def summarize(runs, target_far: float = 0.05, name: str = RESULT_NAME) -> dict:
+def summarize(runs, target_far: float = 0.05, name: str = RESULT_NAME, veto: bool = True) -> dict:
     """Calibrate one threshold per frame-count class, each with a third of the
     false-alarm budget, then measure completeness and accuracy with them."""
     null_scores = {c: [] for c in FRAME_CLASSES}
@@ -208,14 +208,19 @@ def summarize(runs, target_far: float = 0.05, name: str = RESULT_NAME) -> dict:
             null_max.append(max((d["score"] for d in doc["detections"]), default=0.0))
             if r.get("visit"):
                 visit_nulls.setdefault(r["visit"], []).append(
-                    [(d["score"], d["n_frames_used"]) for d in doc["detections"]])
+                    [(d["score"], d["n_frames_used"], d["ra_deg"], d["dec_deg"])
+                     for d in doc["detections"]])
             continue
         n_ast_runs += 1
         false_dets += [(d["score"], d["n_frames_used"]) for d in unmatched(doc, truth, scale)]
         if r.get("visit"):
             visit_false.setdefault(r["visit"], []).append(
-                [(d["score"], d["n_frames_used"]) for d in unmatched(doc, truth, scale)])
+                [(d["score"], d["n_frames_used"], d["ra_deg"], d["dec_deg"])
+                 for d in unmatched(doc, truth, scale)])
+        # Match positions (for the artifact veto), found by score.
+        pos = {d["score"]: (d["ra_deg"], d["dec_deg"]) for d in doc["detections"]}
         for te in doc["truth_eval"]:
+            te = {**te, "matches": [{**m, "radec": pos.get(m["score"])} for m in te.get("matches", [])]}
             (known_rows if te.get("real") else rows).append(
                 {"dir": r["dir"], "visit": r.get("visit"), **te})
 
@@ -243,7 +248,7 @@ def summarize(runs, target_far: float = 0.05, name: str = RESULT_NAME) -> dict:
         row["found"] = bool(hits)
         row["found_errors"] = max(hits, key=lambda m: m["score"])["errors"] if hits else None
 
-    per_visit = _per_visit(visit_nulls, visit_false, usable, target_far)
+    per_visit = _per_visit(visit_nulls, visit_false, usable, target_far, veto)
 
     def table(key, edges, found="found"):
         out = []
@@ -291,33 +296,43 @@ def summarize(runs, target_far: float = 0.05, name: str = RESULT_NAME) -> dict:
     }
 
 
-def _per_visit(visit_nulls, visit_false, usable, target_far) -> Optional[dict]:
+def _per_visit(visit_nulls, visit_false, usable, target_far, veto: bool = True) -> Optional[dict]:
     """Per-visit thresholds (``nullcal``): ratios calibrated on the scrambled
     copies with leave-one-out levels, then completeness with each visit's
-    level from all its copies. Marks ``row["found_visit"]``."""
-    cal = nullcal.calibrate_ratios(visit_nulls, target_far)
+    level from all its copies, and the artifact veto (sites from all its
+    copies). Marks ``row["found_visit"]``."""
+    cal = nullcal.calibrate_ratios(visit_nulls, target_far, veto=veto)
     if cal is None:
         return None
     ratios = cal["ratios"]
     visits = {}
+    sites = {}
     for v, copies in visit_nulls.items():
-        level = nullcal.null_level([[s for s, _ in c] for c in copies], cal["rank"])
+        level = nullcal.null_level([[c[0] for c in cp] for cp in copies], cal["rank"])
         thr = nullcal.thresholds(level, ratios)
-        unmatched_n = [sum(nullcal.passes(s, n, thr) for s, n in run)
+        sites[v] = nullcal.veto_sites(copies, level) if veto else np.zeros((0, 2))
+        unmatched_n = [sum(nullcal.passes(c[0], c[1], thr)
+                           and not nullcal.is_vetoed(c[2], c[3], sites[v]) for c in run)
                        for run in visit_false.get(v, [])]
         visits[v] = {"level": level, "thresholds": thr, "n_copies": len(copies),
+                     "n_veto_sites": len(sites[v]),
                      "unmatched_per_asteroid_run": _mean(unmatched_n)}
+    n_vetoed = 0
     for row in usable:
         vis = visits.get(row.get("visit"))
         if vis is None:
             continue
         hits = [m for m in row.get("matches", [])
                 if nullcal.passes(m["score"], m["n_frames_used"], vis["thresholds"])]
-        row["found_visit"] = bool(hits)
+        kept = [m for m in hits if not (m.get("radec") and nullcal.is_vetoed(
+            *m["radec"], sites[row["visit"]]))]
+        n_vetoed += bool(hits) and not kept
+        row["found_visit"] = bool(kept)
     for v, vis in visits.items():
         sel = [row["found_visit"] for row in usable if row.get("visit") == v and "found_visit" in row]
         vis.update(n_asteroids=len(sel), completeness=_mean(sel))
     return {"rank": cal["rank"], "ratios": ratios, "false_per_null_run": cal["false_per_copy"],
+            "veto": veto, "n_asteroids_vetoed": n_vetoed,
             "far_curve": cal["far_curve"], "visits": visits}
 
 

@@ -42,3 +42,30 @@ def test_null_scrambles_default_on_for_real_wise_only():
     assert default_null_scrambles(SimpleNamespace(header=h)) == 2
     h["SIMULATD"] = True
     assert default_null_scrambles(SimpleNamespace(header=h)) == 0
+
+
+def test_artifact_veto_drops_recurring_site_from_calibration():
+    rng = np.random.default_rng(1)
+
+    def copy(extra=()):
+        c = [(float(s), 5, 10.0 + rng.uniform(0, 0.5), 20.0 + rng.uniform(0, 0.5))
+             for s in rng.uniform(5.0, 8.0, 40)]
+        return c + list(extra)
+
+    # One visit has the same strong artifact (score 14) in every copy.
+    art = (14.0, 6, 10.3, 20.3)
+    visits = {f"v{i}": [copy() for _ in range(3)] for i in range(8)}
+    visits["bad"] = [copy([(art[0], art[1], art[2] + 0.002, art[3])]) for _ in range(3)]
+    plain = nullcal.calibrate_ratios(visits, target_far=0.05, veto=False)
+    vetoed = nullcal.calibrate_ratios(visits, target_far=0.05, veto=True)
+    assert plain["ratios"]["5+"] > 1.8  # set by the artifact
+    assert vetoed["ratios"]["5+"] < 1.4
+
+    level = 7.0
+    sites = nullcal.veto_sites([[art]], level)
+    assert nullcal.is_vetoed(art[2] + 0.01, art[3], sites)  # 34" away
+    assert not nullcal.is_vetoed(art[2] + 0.03, art[3], sites)  # 100" away
+    dets = [{"score": 20.0, "n_frames_used": 6, "ra_deg": art[2], "dec_deg": art[3]},
+            {"score": 20.0, "n_frames_used": 6, "ra_deg": 11.0, "dec_deg": 21.0}]
+    assert nullcal.apply(dets, nullcal.thresholds(level), sites) == 1
+    assert dets[0]["artifact_veto"] and not dets[0]["detected"] and dets[1]["detected"]

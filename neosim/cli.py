@@ -67,6 +67,7 @@ OPTIONS = [
     ("population", "rate_deg_day", "--rate", float, "fix every asteroid's rate, deg/day"),
     ("population", "pa_deg", "--pa", float, "fix every asteroid's motion direction, deg E of N"),
     ("population", "accel_rms_arcsec_hr2", "--accel", float, "rms acceleration, arcsec/hr^2"),
+    ("population", "motion", "--motion", str, "linear (quadratic path) or orbit (two-body)"),
     ("population", "lc_amp_max", "--lc-amp-max", float, "max light-curve amplitude, mag"),
     ("population", "placement_box_arcmin", "--placement-box", float,
      "asteroids start in this square around the target, arcmin"),

@@ -78,7 +78,8 @@ def run_simulation(inst: InstrumentConfig, cad: CadenceConfig, pnt: PointingConf
     else:
         stars = None
 
-    asteroids = build_population(pop, inst, pnt.ra_deg, pnt.dec_deg, frames[ref].wcs, rng_ast)
+    asteroids = build_population(pop, inst, pnt.ra_deg, pnt.dec_deg, frames[ref].wcs, rng_ast,
+                                 t_ref=t_ref)
     defects = build_defects(art, inst, rng_defects)
     shape = (inst.height, inst.width)
     dark = defects.dark_image(shape)

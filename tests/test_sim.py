@@ -219,3 +219,27 @@ def test_ground_trailing(tmp_path):
     truth = json.load(open(out / "truth.json"))
     # 8 deg/day for 60 s is 20" = 16.7 px at 1.2"/px.
     assert truth["asteroids"][0]["frames"][0]["trail_px"] == pytest.approx(16.67, rel=0.01)
+
+
+def test_orbit_motion_starts_where_drawn_and_curves():
+    from neosim.astrometry import tangent_to_equatorial
+    from neosim.motion import build_population
+
+    pop = PopulationConfig(n_asteroids=6, rate_min_deg_day=0.1, rate_max_deg_day=1.0,
+                           motion="orbit", placement_box_arcmin=20.0)
+    t_ref = 57000.4
+    ra0, dec0 = 120.0, 5.0
+    ast = build_population(pop, InstrumentConfig(), ra0, dec0, None, np.random.default_rng(2),
+                           t_ref=t_ref)
+    for a in ast:
+        ra, dec = a.radec(t_ref, t_ref, ra0, dec0)
+        ra_l, dec_l = tangent_to_equatorial(a.xi0, a.eta0, ra0, dec0)
+        assert abs((ra - ra_l) * math.cos(math.radians(dec))) * 3600 < 0.01
+        assert abs(dec - dec_l) * 3600 < 0.01
+        # Deviation from the chord over +-0.7 day: the path is not straight.
+        t = np.array([t_ref - 0.7, t_ref, t_ref + 0.7])
+        r, d = a.radec(t, t_ref, ra0, dec0)
+        x = (r - r[1]) * math.cos(math.radians(dec0)) * 3600
+        y = (d - d[1]) * 3600
+        assert math.hypot(0.5 * (x[0] + x[2]), 0.5 * (y[0] + y[2])) > 0.1
+        assert json.dumps(a.to_dict())  # truth serializes
