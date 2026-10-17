@@ -330,3 +330,45 @@ def test_link_keeps_different_path_through_two_shared_detections():
     members = [sorted(k for k, _ in t.members) for t in out]
     assert [0, 1, 2, 4, 5] in members  # B, the stronger (5 detections)
     assert any(m == [0, 1, 3] for m in members)  # A, sharing B's frames 0-1
+
+
+def _cuda_kernel_emulated(psi, phi, valid, dx, dy, min_frames, chunk=7):
+    """Line-by-line Python transliteration of backend._CUDA_SRC (including the
+    velocity chunking), to check its indexing without a GPU."""
+    n, h, w = psi.shape
+    flat_psi, flat_phi = psi.ravel(), phi.ravel()
+    best2 = np.zeros(h * w, np.float32)
+    bestv = np.full(h * w, -1, np.int32)
+    for v0 in range(0, dx.shape[0], chunk):
+        ddx, ddy = dx[v0:v0 + chunk].ravel(), dy[v0:v0 + chunk].ravel()
+        nv = dx[v0:v0 + chunk].shape[0]
+        for y in range(h):
+            for x in range(w):
+                idx = y * w + x
+                b2, bv = best2[idx], bestv[idx]
+                for v in range(nv):
+                    a = d = np.float32(0.0)
+                    for k in range(n):
+                        xx, yy = x + ddx[v * n + k], y + ddy[v * n + k]
+                        if xx < 0 or xx >= w or yy < 0 or yy >= h:
+                            continue
+                        j = (k * h + yy) * w + xx
+                        a += flat_psi[j]
+                        d += flat_phi[j]
+                    if a > 0.0 and a * a > b2 * d:
+                        b2, bv = a * a / d, v0 + v
+                best2[idx], bestv[idx] = b2, bv
+    best_v = bestv.reshape(h, w)
+    return np.where(best_v >= 0, np.sqrt(best2.reshape(h, w)), -np.inf).astype(np.float32), best_v
+
+
+def test_cuda_kernel_logic_matches_reference():
+    from neodetect import backend
+    assert backend._self_test(_cuda_kernel_emulated)
+
+
+@pytest.mark.skipif(not __import__("neodetect.backend", fromlist=["x"]).HAVE_CUPY,
+                    reason="needs CuPy and an NVIDIA GPU")
+def test_cupy_backend_matches_reference():  # pragma: no cover
+    from neodetect import backend
+    assert backend.cupy_ok()

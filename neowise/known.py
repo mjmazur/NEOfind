@@ -56,6 +56,8 @@ def parse_skybot(text: str) -> List[dict]:
         if line.startswith("#") or not line.strip() or header is None:
             continue
         v = dict(zip(header, [c.strip() for c in line.split("|")]))
+        if not v.get("Mv"):  # no predicted magnitude (some comets): can't be scored
+            continue
         h, m, s = (float(x) for x in v["RA(h)"].split())
         sign = -1.0 if v["DE(deg)"].lstrip().startswith("-") else 1.0
         d, dm, ds = (abs(float(x)) for x in v["DE(deg)"].split())
@@ -63,11 +65,18 @@ def parse_skybot(text: str) -> List[dict]:
             "num": v["Num"], "name": v["Name"], "class": v["Class"],
             "ra_deg": 15.0 * (h + m / 60.0 + s / 3600.0),
             "dec_deg": sign * (d + dm / 60.0 + ds / 3600.0),
-            "v_mag": float(v["Mv"]), "err_arcsec": float(v["Err(arcsec)"]),
+            "v_mag": float(v["Mv"]), "err_arcsec": _num(v.get("Err(arcsec)")),
             "dra_arcsec_h": float(v["dRA(arcsec/h)"]), "ddec_arcsec_h": float(v["dDEC(arcsec/h)"]),
             "dist_au": float(v["Dg(ua)"]),
         })
     return rows
+
+
+def _num(x) -> float:
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return float("nan")
 
 
 def _unit(ra, dec):

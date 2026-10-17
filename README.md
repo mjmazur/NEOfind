@@ -86,6 +86,7 @@ python -m neodetect detect sims/<run> --plot          # -> detections.json / .pn
 python -m neodetect detect frame_*-int.fits.fz         # any FITS frames with WCS + time
 python -m neodetect detect DIR --region 150.1 12.3 0.5 # search one 0.5 deg square
 python -m neodetect detect DIR --ades obs.psv --gifs cutouts/  # MPC report + vetting GIFs
+python -m neodetect detect pngs/                       # PNG/TIFF/JPEG + times.csv (no WCS)
 python -m neodetect validate sims/<null-run>           # noise whitening self-check
 python sweep.py -o sims/sweeps/wise_v1 --runs 24 --nulls 24
 python -m neodetect evaluate sims/sweeps/wise_v1       # completeness / false alarms
@@ -96,6 +97,24 @@ Inputs are FITS images with a celestial WCS and an observation time
 (`MJD-MID`, `MJD_OBS`, `MJD-OBS` or `DATE-OBS` + `EXPTIME`). Optional
 companions `X-unc*`/`X-msk*` next to `X-int*` provide uncertainties and a
 bad-pixel mask; `MAGZP` and `PSFFWHM` are used when present.
+
+Raster images (PNG, TIFF, JPEG; 8/16-bit, colour converted to luminance)
+are read when a directory holds no FITS. Times come from a `times.csv`
+(`file,time`, ISO UTC or MJD) or a `<image>.json` (`{"time": ...}`) per
+image. A WCS is built by star matching (`starmatch.py`): stars detected in
+each frame are matched to the middle frame's (phase correlation for the
+shift, then RANSAC for an affine transform), and each frame gets the
+reference frame's linear TAN WCS composed with its affine map. An optional
+`sequence.json` gives `pixel_scale_arcsec`, `ra_deg`/`dec_deg`,
+`exptime_s`, `fwhm_arcsec`, `magzp`; without them positions and rates are
+in nominal units (1"/px about (0, 0)) and the PSF FWHM is measured from
+the stars. Pixels at the format's maximum are saturated; with no
+uncertainty image the noise model is estimated from the data (bright
+sources' own photon noise is then missing, so their scores run high).
+Phase correlation tolerates small field rotations only (a few degrees).
+On a simulated ground sequence converted to 16-bit PNG without WCS, all 8
+asteroids were found as from the FITS, within 0.01–0.05 px and with the
+same rates.
 
 Pipeline:
 
@@ -147,8 +166,14 @@ Pipeline:
      detections with a stronger one is dropped only if it is the same path.
    - *Shift-and-stack* (`shiftstack.py`, `backend.py`): every velocity on a
      grid up to 0.25 deg/day, per-frame contributions clipped at 4σ so no
-     single frame can carry a hypothesis; numba-parallel on CPU (a CuPy GPU
-     backend only needs to implement one function).
+     single frame can carry a hypothesis. Backends (`--backend`): numba
+     (parallel CPU, cache-blocked), cupy (NVIDIA GPU: a CUDA kernel, one
+     thread per grid pixel over chunks of 1024 velocities) and a numpy
+     reference. `auto` uses the GPU when CuPy finds one and the kernel
+     passes a self-test against the numpy reference (once per process),
+     else numba. The CUDA kernel's logic is tested here through a
+     line-by-line Python transliteration; it has not yet run on a GPU (no
+     NVIDIA device on the development machine), hence the self-test.
 5. **Track fit** (`trackfit.py`): exact PSF-stamp matched filter per frame,
    robust combination (frames far *above* the median flux are dropped, e.g.
    a cosmic ray on the track; low frames are kept as evidence against),
@@ -271,6 +296,17 @@ On the straight `wise_v1` paths the fit only costs (0.45″ rms against
 sequence, the linker takes seconds; the shift-and-stack up to 0.25
 deg/day takes ~40 s on 32 cores; the full evaluation (96 runs, `-j 4`)
 takes ~1.5 h.
+
+### Measured performance (simulated ground preset)
+
+`sims/sweeps/ground_v1`: 24 runs with 12 asteroids (V 17–21, 0.05–2
+deg/day) and 24 null runs, `ground` preset (1.2"/px, 2" seeing, 60 s
+exposures, single-frame 5σ depth V = 20). Calibrated thresholds 11.75 /
+11.5 / 9.75 (the instrument default for this preset, `io.default_thresholds`):
+higher than for WISE, because frames close in time give fast chance
+alignments (up to the 10 deg/day linking limit) more room. Completeness is
+1.00 to V = 20, 0.77 at V 20–20.5 and 0.06 at 20.5–21; 0.85–0.91 at every
+rate. Position 0.11" rms, rate 0.4%; magnitudes +0.05 biased, 0.15 rms.
 
 ### Measured performance (real NEOWISE W1)
 

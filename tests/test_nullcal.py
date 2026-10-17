@@ -44,6 +44,9 @@ def test_real_wise_defaults_guard_copy_and_thresholds():
     h["SIMULATD"] = True
     assert default_null_scrambles(SimpleNamespace(header=h)) == 0
     assert default_thresholds(SimpleNamespace(header=h)) is None
+    g = fits.Header({"INSTRUME": "ground", "SIMULATD": True})
+    from neodetect.io import GROUND_SIM_THRESHOLDS
+    assert default_thresholds(SimpleNamespace(header=g)) == GROUND_SIM_THRESHOLDS
 
 
 def test_guard_raises_only_noisy_visits():

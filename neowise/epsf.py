@@ -71,7 +71,8 @@ def _gaussian_grid(sigma: float, os: int, r: int) -> np.ndarray:
     return np.outer(f, f)
 
 
-def find_stars(resid, bad, snr_min=40.0, snr_max=3000.0, isolation=BG_ANNULUS[1], edge=None):
+def find_stars(resid, bad, snr_min=40.0, snr_max=3000.0, isolation=BG_ANNULUS[1], edge=None,
+               neighbour_frac=0.05):
     """Bright, unsaturated, isolated point sources: (x, y) integer peaks.
     SNR is the peak over the sky noise."""
     edge = BG_ANNULUS[1] + 2 if edge is None else edge
@@ -90,7 +91,7 @@ def find_stars(resid, bad, snr_min=40.0, snr_max=3000.0, isolation=BG_ANNULUS[1]
             continue
         win = sm[y - isolation:y + isolation + 1, x - isolation:x + isolation + 1].copy()
         win[isolation - 5:isolation + 6, isolation - 5:isolation + 6] = 0
-        if win.max() > 0.05 * sm[y, x]:
+        if win.max() > neighbour_frac * sm[y, x]:
             continue
         out.append((x, y))
     return out
@@ -143,15 +144,23 @@ def build_epsf(frames, sigma0_px: float, iterations: int = 10, max_stars: int = 
     log = log or (lambda *a: None)
     os, r = OVERSAMPLE, RADIUS
     psf = EPSF(_gaussian_grid(sigma0_px, os, r), os, r, 0)
-    stars = []  # (img, sig, bad, x, y)
-    for f in frames:
-        resid = f.data - estimate_sky(f.data, f.bad)
-        sig = f.unc if f.unc is not None else np.full(f.shape, np.std(resid[~f.bad]), np.float32)
-        for x, y in find_stars(resid, f.bad):
-            stars.append((resid, sig, f.bad, float(x), float(y)))
+    resids = [(f.data - estimate_sky(f.data, f.bad), f) for f in frames]
+    # In the most crowded fields (the Galactic bulge) no star is isolated by
+    # the strict test; relax it step by step (neighbours are fitted as noise),
+    # and fall back to the Gaussian if even that finds too few.
+    for isolation, frac in ((BG_ANNULUS[1], 0.05), (BG_ANNULUS[1], 0.15), (RADIUS + 1, 0.3)):
+        stars = []  # (img, sig, bad, x, y)
+        for resid, f in resids:
+            sig = f.unc if f.unc is not None else np.full(f.shape, np.std(resid[~f.bad]), np.float32)
+            for x, y in find_stars(resid, f.bad, isolation=isolation, neighbour_frac=frac):
+                stars.append((resid, sig, f.bad, float(x), float(y)))
+        if len(stars) >= 10:
+            break
+        log(f"ePSF: {len(stars)} stars with isolation {isolation} px / {frac:.0%}; relaxing")
     stars = stars[:: max(1, len(stars) // max_stars)]
     if len(stars) < 10:
-        raise ValueError(f"only {len(stars)} usable stars for an ePSF")
+        log(f"ePSF: only {len(stars)} usable stars; using the Gaussian (sigma {sigma0_px:.2f} px)")
+        return psf
 
     n_side = 2 * r * os + 1
     for it in range(iterations):

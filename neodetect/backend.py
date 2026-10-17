@@ -10,9 +10,12 @@ requiring at least ``min_frames`` frames with ``valid`` = 1 there. ``psi_c``
 and ``phi`` are zero wherever ``valid`` is zero, so the sums need no
 branches (which lets the compiler vectorize the inner loop).
 
-Backends: ``numba`` (parallel CPU, default when installed) and ``numpy``
-(slow reference). A ``cupy`` backend for NVIDIA GPUs belongs here too
-(milestone 6); it only has to implement this one function.
+Backends: ``cupy`` (NVIDIA GPU: a CUDA kernel, one thread per grid pixel
+looping over a chunk of velocities and all frames), ``numba`` (parallel
+CPU) and ``numpy`` (slow reference). ``auto`` picks cupy when CuPy and a
+GPU are present and its kernel passes a self-test against the numpy
+reference on a small random problem (run once per process), else numba,
+else numpy.
 """
 
 import math
@@ -124,16 +127,114 @@ if HAVE_NUMBA:
         return _stack_max_kernel(psi_c, phi, x_first, x_end, dx, dy)
 
 
+_CUDA_SRC = r"""
+extern "C" __global__
+void stack_max(const float* psi, const float* phi, const int* dx, const int* dy,
+               const int n, const int h, const int w, const int v0, const int nv,
+               float* best2, int* bestv)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= w || y >= h) return;
+    const long idx = (long)y * w + x;
+    float b2 = best2[idx];
+    int bv = bestv[idx];
+    for (int v = 0; v < nv; v++) {
+        float a = 0.0f, d = 0.0f;
+        for (int k = 0; k < n; k++) {
+            const int xx = x + dx[v * n + k];
+            const int yy = y + dy[v * n + k];
+            if (xx < 0 || xx >= w || yy < 0 || yy >= h) continue;
+            const long j = ((long)k * h + yy) * w + xx;
+            a += psi[j];
+            d += phi[j];
+        }
+        // S > best  <=>  a^2 > best^2 * d for positive S (as the numba kernel).
+        if (a > 0.0f && a * a > b2 * d) {
+            b2 = a * a / d;
+            bv = v0 + v;
+        }
+    }
+    best2[idx] = b2;
+    bestv[idx] = bv;
+}
+"""
+CUPY_CHUNK = 1024  # velocities per kernel launch (keeps each launch short)
+
+try:  # pragma: no cover - needs an NVIDIA GPU
+    import cupy as _cp
+    HAVE_CUPY = _cp.cuda.runtime.getDeviceCount() > 0
+except Exception:  # ImportError, or CUDA without a device/driver
+    _cp = None
+    HAVE_CUPY = False
+
+_cupy_kernel = None
+_cupy_ok = None
+
+
+def _stack_max_cupy(psi_c, phi, valid, dx, dy, min_frames):  # pragma: no cover - GPU only
+    global _cupy_kernel
+    cp = _cp
+    if _cupy_kernel is None:
+        _cupy_kernel = cp.RawKernel(_CUDA_SRC, "stack_max")
+    n, h, w = psi_c.shape
+    psi_g = cp.asarray(np.ascontiguousarray(psi_c, np.float32))
+    phi_g = cp.asarray(np.ascontiguousarray(phi, np.float32))
+    best2 = cp.zeros((h, w), cp.float32)
+    bestv = cp.full((h, w), -1, cp.int32)
+    block = (32, 8, 1)
+    grid = ((w + block[0] - 1) // block[0], (h + block[1] - 1) // block[1], 1)
+    for v0 in range(0, dx.shape[0], CUPY_CHUNK):
+        ddx = cp.asarray(np.ascontiguousarray(dx[v0:v0 + CUPY_CHUNK], np.int32))
+        ddy = cp.asarray(np.ascontiguousarray(dy[v0:v0 + CUPY_CHUNK], np.int32))
+        _cupy_kernel(grid, block, (psi_g, phi_g, ddx, ddy, np.int32(n), np.int32(h), np.int32(w),
+                                   np.int32(v0), np.int32(ddx.shape[0]), best2, bestv))
+    best_v = cp.asnumpy(bestv)
+    best_s = np.where(best_v >= 0, np.sqrt(cp.asnumpy(best2)), -np.inf).astype(np.float32)
+    return best_s, best_v
+
+
+def _self_test(stack_max, seed: int = 0) -> bool:
+    """Compare a backend with the numpy reference on a small random problem."""
+    rng = np.random.default_rng(seed)
+    n, h, w, nv = 6, 40, 48, 30
+    valid = (rng.uniform(size=(n, h, w)) > 0.2).astype(np.uint8)
+    psi = np.where(valid, rng.normal(0, 1, (n, h, w)), 0).astype(np.float32)
+    phi = np.where(valid, rng.uniform(0.5, 1.5, (n, h, w)), 0).astype(np.float32)
+    dx = rng.integers(-5, 6, (nv, n)).astype(np.int32)
+    dy = rng.integers(-5, 6, (nv, n)).astype(np.int32)
+    s0, v0 = _stack_max_numpy(psi, phi, valid, dx, dy, 1)
+    s1, v1 = stack_max(psi, phi, valid, dx, dy, 1)
+    ok = np.isfinite(s0)
+    return bool(np.array_equal(ok, np.isfinite(s1)) and np.allclose(s0[ok], s1[ok], rtol=1e-4, atol=1e-5))
+
+
+def cupy_ok() -> bool:
+    """CuPy and a GPU are present and the kernel agrees with the reference."""
+    global _cupy_ok
+    if _cupy_ok is None:
+        _cupy_ok = HAVE_CUPY and _self_test(_stack_max_cupy)
+    return _cupy_ok
+
+
 def available():
     names = ["numpy"]
     if HAVE_NUMBA:
         names.insert(0, "numba")
+    if HAVE_CUPY:
+        names.insert(0, "cupy")
     return names
 
 
 def get_stack_max(name: str = "auto", threads: int = 0):
     if name == "auto":
-        name = "numba" if HAVE_NUMBA else "numpy"
+        name = "cupy" if cupy_ok() else ("numba" if HAVE_NUMBA else "numpy")
+    if name == "cupy":
+        if not HAVE_CUPY:
+            raise ValueError("cupy backend requested but CuPy or an NVIDIA GPU is not available")
+        if not cupy_ok():
+            raise RuntimeError("cupy backend failed its self-test against the numpy reference")
+        return _stack_max_cupy
     if name == "numba":
         if not HAVE_NUMBA:
             raise ValueError("numba backend requested but numba is not installed")

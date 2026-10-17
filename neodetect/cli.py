@@ -36,7 +36,9 @@ def _add_detector_args(p: argparse.ArgumentParser) -> None:
                    help=f"fastest stacked motion, deg/day (default: {d.stack_rate_max})")
     g.add_argument("--stack-threshold", type=float, default=d.stack_threshold,
                    help=f"stacked SNR for candidates (default: {d.stack_threshold})")
-    g.add_argument("--backend", default=d.backend, help="shift-and-stack backend: auto, numba, numpy")
+    g.add_argument("--backend", default=d.backend,
+                   help="shift-and-stack backend: auto (cupy on an NVIDIA GPU once its self-test "
+                        "passes, else numba, else numpy), cupy, numba, numpy")
     g.add_argument("--min-frames", type=int, default=d.min_frames,
                    help=f"frames a track must use (default: {d.min_frames})")
     g.add_argument("--threshold", type=float, default=None, dest="detect_threshold",

@@ -431,6 +431,16 @@ sweep.py, tests/
       the guard level 8.8 (was 8.4); ratios 1.30 / 1.31 / 1.45. The one
       loss (v011, W1 15.6) is found as a 3-frame 9.8 instead of a 4-frame
       9.6.
+  - Real WISE PSF (wings) in the detector, examined: against each visit's
+    empirical ePSF (`neowise.epsf`, ~10% of the flux beyond 3 px), the
+    Gaussian matched filter keeps 0.993–0.994 of the SNR at every
+    sub-pixel phase, so a winged filter would gain < 1%; the PSF's other
+    effects are already measured empirically (aperture correction 1.15,
+    centroid offset 0.15 px). Not pursued. WISE artifact flags: the L1b
+    masks carry none (spikes, halos, ghosts, latents are flagged only per
+    source, as `cc_flags` in the single-exposure catalog); using them would
+    need a catalog query per visit -- left for when the new visits show
+    whether bright-star false alarms still matter.
   - Open from M4: bright fast movers (linker curvature, above);
     the global thresholds rest on 15 ecliptic visits -- recheck the guard
     level on new sky (Galactic plane).
@@ -492,6 +502,21 @@ sweep.py, tests/
    aperture correction, curved paths (acceleration fit, orbit injection),
    per-visit thresholds, local noise map.
 5. **Generic user input.** Directory/glob, PNG + sidecar times, star-matching
-   registration; ground preset tuning.
+   registration; ground preset tuning. Status: done. Raster frames (PNG,
+   TIFF, JPEG) with `times.csv` / `<image>.json` times and optional
+   `sequence.json`; `starmatch.py` gives each frame a linear TAN WCS from
+   star matching (phase correlation + RANSAC affine; small field rotations
+   only). A simulated ground sequence as 16-bit PNG without WCS gives the
+   same 8 detections as the FITS (0.01–0.05 px). Ground preset calibrated
+   (`ground_v1`: thresholds 11.75 / 11.5 / 9.75, the instrument default;
+   complete to V = 20, 0.77 at 20–20.5). Open: plate solving for rotating
+   fields; noise model without uncertainty images ignores a source's own
+   photon noise (bright sources' scores run high).
 6. **Performance.** numba CPU and CuPy GPU backends for shift-and-stack;
-   tiling for full frames.
+   tiling for full frames. Status: numba done (M2); the CuPy backend is
+   written (`backend._stack_max_cupy`, a CUDA RawKernel mirroring the numba
+   kernel, launched in chunks of 1024 velocities) and chosen by `auto` only
+   after a self-test against the numpy reference; its logic is tested via a
+   Python transliteration of the kernel, but it has not run on a GPU yet --
+   first job on a GPU machine: `pytest` (the GPU test then runs) and a
+   timing of shift-and-stack against numba. Tiling still open.

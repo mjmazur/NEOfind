@@ -11,6 +11,15 @@ image with no companions.
 A simulator run directory also provides ``truth.json`` and
 ``metadata.json``; a ``neowise`` visit directory provides ``known.json``
 (known solar-system objects, same format).
+
+Raster images (PNG, TIFF, JPEG) are read when no FITS image is found. They
+carry no times or WCS: times come from a sidecar -- ``times.csv`` in the
+directory (``file,time`` per line, ISO UTC or MJD) or a ``<image>.json``
+next to each image (``{"time": ...}``) -- and the WCS from star matching
+(``starmatch``). An optional ``sequence.json`` gives ``pixel_scale_arcsec``,
+``ra_deg``, ``dec_deg`` (the pointing), ``exptime_s``, ``fwhm_arcsec``,
+``magzp`` and ``gain_e_per_adu``; without a FWHM it is measured from the
+stars. Pixels at the format's maximum value are saturated.
 """
 
 import glob
@@ -28,6 +37,7 @@ from astropy.wcs import WCS, FITSFixedWarning, NoConvergence
 import warnings
 
 FITS_EXTS = (".fits", ".fits.gz", ".fits.fz", ".fit", ".fts")
+RASTER_EXTS = (".png", ".tif", ".tiff", ".jpg", ".jpeg")
 SAT_FRACTION = 0.98  # pixels above this fraction of SATURATE are treated as saturated
 
 
@@ -163,10 +173,21 @@ def default_null_scrambles(frame: "Frame") -> int:
 REAL_WISE_THRESHOLDS = (10.25, 9.25, 10.25)
 
 
+# The simulator's ``ground`` preset (sims/sweeps/ground_v1: 24 null runs,
+# 0 false per run). Its frames are close in time, so fast chance alignments
+# (up to the 10 deg/day linking limit) have more room than in WISE visits.
+GROUND_SIM_THRESHOLDS = (11.75, 11.5, 9.75)
+
+
 def default_thresholds(frame: "Frame"):
     """(3, 4, >= 5-frame) detection thresholds for this instrument, or None
     for ``DetectorConfig``'s (simulated WISE) defaults."""
-    return REAL_WISE_THRESHOLDS if _is_real_wise(frame.header) else None
+    if _is_real_wise(frame.header):
+        return REAL_WISE_THRESHOLDS
+    h = frame.header
+    if h.get("SIMULATD") and str(h.get("INSTRUME", "")).strip().lower() == "ground":
+        return GROUND_SIM_THRESHOLDS
+    return None
 
 
 def default_aperture_ee(frame: "Frame") -> float:
@@ -243,6 +264,10 @@ def _is_fits(p: Path) -> bool:
     return any(p.name.lower().endswith(ext) for ext in FITS_EXTS)
 
 
+def _is_raster(p: Path) -> bool:
+    return p.suffix.lower() in RASTER_EXTS
+
+
 def find_images(inputs) -> List[Path]:
     if isinstance(inputs, (str, Path)):
         inputs = [inputs]
@@ -251,10 +276,14 @@ def find_images(inputs) -> List[Path]:
         p = Path(item)
         if p.is_dir():
             files = sorted(q for q in p.iterdir() if _is_fits(q))
+            if not files:
+                files = sorted(q for q in p.iterdir() if _is_raster(q))
         elif p.exists():
             files = [p]
         else:
             files = sorted(Path(g) for g in glob.glob(str(item)) if _is_fits(Path(g)))
+            if not files:
+                files = sorted(Path(g) for g in glob.glob(str(item)) if _is_raster(Path(g)))
         ints = [q for q in files if "-int" in q.name]
         if ints:
             files = ints
@@ -264,11 +293,91 @@ def find_images(inputs) -> List[Path]:
     return found
 
 
+def _parse_time(v) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return float(Time(str(v).strip(), scale="utc").mjd)
+
+
+def raster_times(paths: List[Path]) -> dict:
+    """Image path -> MJD from ``times.csv`` (per directory) or ``<image>.json``."""
+    out = {}
+    for d in sorted({p.parent for p in paths}):
+        tf = d / "times.csv"
+        if tf.exists():
+            for line in tf.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or line.lower().startswith("file,"):
+                    continue
+                name, t = [x.strip() for x in line.split(",", 1)]
+                out[str(d / name)] = _parse_time(t)
+    for p in paths:
+        if str(p) not in out:
+            for side in (p.with_suffix(".json"), p.with_name(p.name + ".json")):
+                if side.exists():
+                    out[str(p)] = _parse_time(json.loads(side.read_text())["time"])
+                    break
+    missing = [p.name for p in paths if str(p) not in out]
+    if missing:
+        raise ValueError(f"no observation time for {missing[:3]} (times.csv or <image>.json)")
+    return out
+
+
+def load_raster_frame(path, mjd: float, meta: dict) -> Frame:
+    """A PNG/TIFF/JPEG frame (no WCS yet; ``starmatch`` assigns one)."""
+    import imageio.v3 as iio
+    path = Path(path)
+    raw = np.asarray(iio.imread(path))
+    top = float(np.iinfo(raw.dtype).max) if np.issubdtype(raw.dtype, np.integer) else None
+    if raw.ndim == 3:  # colour: luminance (alpha dropped); saturated if any channel is
+        sat = np.any(raw[..., :3] >= top, axis=2) if top is not None else np.zeros(raw.shape[:2], bool)
+        data = (raw[..., :3].astype(np.float32) @ np.array([0.299, 0.587, 0.114], np.float32)
+                if raw.shape[2] >= 3 else raw[..., 0].astype(np.float32))
+    else:
+        data = raw.astype(np.float32)
+        sat = data >= top if top is not None else np.zeros(data.shape, bool)
+    bad = ~np.isfinite(data) | sat
+    data[bad] = 0.0
+    h = fits.Header()
+    for key, k in (("EXPTIME", "exptime_s"), ("MAGZP", "magzp"), ("PSFFWHM", "fwhm_arcsec"),
+                   ("GAIN", "gain_e_per_adu")):
+        if meta.get(k) is not None:
+            h[key] = meta[k]
+    h["MJD-OBS"] = mjd
+    return Frame(path=str(path), data=data, unc=None, bad=bad, wcs=None, mjd=mjd,
+                 exptime=meta.get("exptime_s"), magzp=meta.get("magzp"),
+                 psf_fwhm_arcsec=meta.get("fwhm_arcsec"), saturate=top, band=None, header=h)
+
+
+def _load_raster_sequence(paths: List[Path]) -> List[Frame]:
+    from . import starmatch
+    meta = {}
+    seq_json = paths[0].parent / "sequence.json"
+    if seq_json.exists():
+        meta = json.loads(seq_json.read_text())
+    times = raster_times(paths)
+    frames = sorted((load_raster_frame(p, times[str(p)], meta) for p in paths), key=lambda f: f.mjd)
+    starmatch.assign_wcs(frames, scale_arcsec=meta.get("pixel_scale_arcsec"),
+                         ra_deg=meta.get("ra_deg", 0.0), dec_deg=meta.get("dec_deg", 0.0))
+    if not meta.get("fwhm_arcsec"):
+        ref = frames[len(frames) // 2]
+        fwhm = starmatch.measure_fwhm_px(ref.data, ref.bad, starmatch.detect_stars(ref.data, ref.bad))
+        if fwhm:
+            for f in frames:
+                f.psf_fwhm_arcsec = fwhm * f.pixel_scale_arcsec
+                f.header["PSFFWHM"] = f.psf_fwhm_arcsec
+    return frames
+
+
 def load_sequence(inputs, bad_bits: Optional[int] = None) -> Sequence:
     paths = find_images(inputs)
     if not paths:
-        raise ValueError(f"no FITS images found in {inputs}")
-    frames = sorted((load_frame(p, bad_bits) for p in paths), key=lambda f: f.mjd)
+        raise ValueError(f"no FITS or raster images found in {inputs}")
+    if all(_is_raster(p) for p in paths):
+        frames = _load_raster_sequence(paths)
+    else:
+        frames = sorted((load_frame(p, bad_bits) for p in paths), key=lambda f: f.mjd)
     truth = metadata = known = None
     source = None
     if isinstance(inputs, (str, Path)) and Path(inputs).is_dir():
