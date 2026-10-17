@@ -140,7 +140,11 @@ Pipeline:
    - *Linking* (`sources.py`, `linking.py`): single-frame peaks ≥ 4σ;
      every pair at a plausible rate (up to 10 deg/day) is propagated to
      the other frames with error-scaled tolerances; ≥ 3 supporting
-     detections make a tracklet.
+     detections make a tracklet. Between strong peaks (z ≥ 7) the
+     tolerance allows for close-object curvature (500 × rate² "/day²) and
+     3–4 detections give a curved seed: a fast NEO's third detection can sit
+     2–7 px off the chord through the other two. A tracklet sharing two
+     detections with a stronger one is dropped only if it is the same path.
    - *Shift-and-stack* (`shiftstack.py`, `backend.py`): every velocity on a
      grid up to 0.25 deg/day, per-frame contributions clipped at 4σ so no
      single frame can carry a hypothesis; numba-parallel on CPU (a CuPy GPU
@@ -191,14 +195,14 @@ Pipeline:
    (0.46″ before). Injections draw their stamps at the same offset.
 
 **Thresholds on real WISE** (`io.default_thresholds`, `nullcal.py`). Real
-NEOWISE frames get their own calibration (10.0 / 9.25 / 10.25 for 3 / 4 /
+NEOWISE frames get their own calibration (10.25 / 9.25 / 10.25 for 3 / 4 /
 ≥5-frame tracks, from `sims/real_v1`); `--threshold*` overrides it.
 `detect` also runs the detector on one time-scrambled copy of the visit
 (`--null-scrambles N`, default 1 on real WISE frames, 0 = off), whose
 *null level* (5th-highest candidate score) serves two purposes:
 
 - **Guard** (default `--null-mode guard`): if the level exceeds the highest
-  single-copy level of the calibration sample (`GUARD_LEVEL` 8.4; median
+  single-copy level of the calibration sample (`GUARD_LEVEL` 8.8; median
   7.1), the thresholds are raised in proportion, for a sky region noisier
   than anything calibrated on (none of the 15 calibration visits is).
 - **Artifact veto:** a candidate within 60″ (at the reference time) of a
@@ -206,7 +210,7 @@ NEOWISE frames get their own calibration (10.0 / 9.25 / 10.25 for 3 / 4 /
   something that recurs whatever the frame order isn't moving.
 
 Per-visit thresholds proper (`--null-mode per-visit`, or `--null-ratio`;
-level × 1.30 / 1.32 / 1.46, best with 2 copies) were the default until the
+level × 1.30 / 1.31 / 1.45, best with 2 copies) were the default until the
 M4 artifact handling evened the visits out. Held out one visit at a time
 (calibrated on the other 14), global thresholds gave 0.044 false
 detections per null copy and per-visit ones 0.089, at slightly lower
@@ -277,17 +281,17 @@ asteroids each, W1 13.5–17, 0.05–3 deg/day; 489 covered by ≥ 3 frames) and
 orbits seen from WISE (curved paths, 491 covered) and shares the null
 runs. The detector runs with its default settings; the thresholds below
 are calibrated on the scrambled nulls. Final M4 detector
-(`evaluation_m4f.json`):
+(`evaluation_m4h.json`):
 
 | | simulated (`wise_v1`) | real (`real_v1`) | real, orbits (`real_v2`) |
 |---|---|---|---|
-| global thresholds 3 / 4 / ≥5 frames | 9.0 / 9.25 / 8.75 | 10.0 / 9.25 / 10.25 | same |
+| global thresholds 3 / 4 / ≥5 frames | 9.0 / 9.25 / 8.75 | 10.25 / 9.25 / 10.25 | same |
 | false detections per null run | 0.04 | 0.00 | 0.00 |
-| unmatched detections per injected run | 0.04 | 0.17 | 0.10 |
-| completeness W1 14.5–15.0 | 1.00 | 1.00 | 0.93 |
-| completeness W1 15.0–15.5 | 0.88 | 0.95 | 0.94 |
-| completeness W1 15.5–16.0 | 0.40 | 0.68 | 0.73 |
-| completeness W1 16.0–16.5 | 0.02 | 0.14 | 0.30 |
+| unmatched detections per injected run | 0.04 | 0.13 | 0.07 |
+| completeness W1 14.5–15.0 | 1.00 | 1.00 | 0.95 |
+| completeness W1 15.0–15.5 | 0.88 | 0.95 | 0.96 |
+| completeness W1 15.5–16.0 | 0.40 | 0.66 | 0.73 |
+| completeness W1 16.0–16.5 | 0.02 | 0.16 | 0.30 |
 | median ideal SNR at W1 15.5–16.0 | 8.6 | 14.4 | 15.1 |
 
 The 50% point is W1 ≈ 15.9 on real data, against 15.6 simulated: real
@@ -307,25 +311,28 @@ and the real 50% point was W1 ≈ 15.4.
   above the 0.05 target met on the held-out scrambled copies. Most
   borrowed one frame from an injected asteroid that frame release missed;
   releasing frames within 1.5 FWHM of any stronger track (`release_fwhm`)
-  brings it to 0.07–0.10 at no completeness cost (offline estimate). What
+  brings it to 0.07–0.13 at no completeness cost (confirmed in a full
+  rerun). What
   remains is one event in the real frame order (v012, a 10.9 3-frame track
   on two bright-star wings and one faint source), which no scrambled copy
   reproduces by position, plus an asteroid seen in one frame only.
 - **Per-visit vs global thresholds:** with the artifacts handled, visits
-  are alike (null levels 6.7–8.2), and per-visit thresholds no longer
-  help: 0.93 / 0.62 / 0.13 vs 0.95 / 0.68 / 0.14 global at W1 15–15.5 /
+  are alike (null levels 6.7–8.8), and per-visit thresholds no longer
+  help: 0.93 / 0.62 / 0.16 vs 0.95 / 0.66 / 0.16 global at W1 15–15.5 /
   15.5–16 / 16–16.5 (`real_v1`), and twice the false rate held out per
   visit. Real WISE now uses the global thresholds plus a one-copy guard
   (above), which on this sample raises no visit.
 - **Curved injections** (`real_v2`) are found as well as straight ones at
-  W1 ≥ 15; the bright, fast ones (W1 14–15) at 0.93–0.96, against 1.00:
-  close, fast movers cross a cutout in few frames.
+  W1 ≥ 15; the bright, fast ones (W1 14–15) at 0.95–1.00 (0.93–0.96
+  before curved linking, which recovered 5 movers of 1.1–2.3 deg/day;
+  2–5 deg/day completeness 0.33 → 0.43): close, fast movers cross a
+  cutout in few frames.
 - **Known asteroids:** (224) Oceana and (120) Lachesis (W1 ≈ 11.7–11.8) are
   found in every copy at score 236–264, within 0.1–0.2 px of the
   parallax-corrected SkyBoT ephemeris. (2882), at a stacked SNR of 12, is
   now found too (11.3); M3 lost it to an edge-pixel outlier.
 - **Accuracy:** 0.27″ median / 0.39″ rms in position on `real_v1`, 0.32″ /
-  0.58″ on the curved `real_v2`; 0.3–0.6% in rate; 0.17–0.28° in position
+  0.60″ on the curved `real_v2`; 0.3–0.6% in rate; 0.17–0.28° in position
   angle; magnitudes −0.01 mag biased, 0.05–0.07 mag rms (aperture
   correction; M3 was 0.14 mag faint).
 - **Cost:** ~3–6 min per visit on 32 cores, plus one run for the guard's

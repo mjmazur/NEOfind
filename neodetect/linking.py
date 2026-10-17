@@ -77,14 +77,15 @@ def link(dets: List[FrameDetections], times: np.ndarray, t_ref: float, v_min: fl
          v_max: float, min_detections: int = 3, sigma_pos: float = 0.5,
          n_sigma: float = 3.0, r_max: float = 6.0, min_dt: float = 0.0,
          max_candidates: int = 200000, accel_bound=None, curve_bound=None,
-         log=None) -> List[Tracklet]:
+         curve_min_z: float = 0.0, dedupe_px: float = 2.0, log=None) -> List[Tracklet]:
     """``accel_bound(speed_px_day)``: the largest path curvature (px/day^2)
     to fit for a tracklet of >= 5 detections moving that fast; None =
     straight tracklets. ``curve_bound(speed_px_day)``: the curvature allowed
     for when matching detections to a pair's chord and fitting 3-4
     detections -- only close, fast objects curve enough to need it, and in
     crowded fields a wider match radius for every rate links chance
-    alignments; None = none."""
+    alignments; None = none. ``curve_min_z``: the curvature allowance applies
+    only between detections at least this significant."""
     log = log or (lambda *a: None)
     n = len(dets)
     trees = [cKDTree(np.column_stack([d.x, d.y])) if len(d) else None for d in dets]
@@ -111,17 +112,24 @@ def link(dets: List[FrameDetections], times: np.ndarray, t_ref: float, v_min: fl
         matches = {i: ii, j: jj}
         # A curved path leaves the chord through the pair by up to
         # a_max/2 |t_k - t_i| |t_k - t_j| at frame k.
+        # Only between strong detections: chance alignments of faint peaks
+        # would otherwise gain as much as curved real movers.
         a_pair = (np.array([curve_bound(v) for v in rate[ii, jj]]) if curve_bound
                   else np.zeros(ii.size))
+        a_pair = np.where(np.minimum(di.z[ii], dj.z[jj]) >= curve_min_z, a_pair, 0.0)
         for k in range(n):
             if k in (i, j) or trees[k] is None:
                 continue
             tk = times[k] - t_mid
-            r = min(r_max, n_sigma * sigma_pos * np.sqrt(0.5 + 2.0 * (tk / dt) ** 2))
-            r = r + 0.5 * np.sqrt(2.0) * a_pair * abs((times[k] - times[i]) * (times[k] - times[j]))
+            r0 = min(r_max, n_sigma * sigma_pos * np.sqrt(0.5 + 2.0 * (tk / dt) ** 2))
+            r = r0 + 0.5 * np.sqrt(2.0) * a_pair * abs((times[k] - times[i]) * (times[k] - times[j]))
             px, py = xm + vx * tk, ym + vy * tk
             dist, idx = query_radii(trees[k], px, py, r)
             hit = np.isfinite(dist)
+            # Beyond the straight-line radius, the match must be strong too.
+            far = hit & (dist > r0)
+            if far.any():
+                hit[far] = dets[k].z[idx[far]] >= curve_min_z
             support += hit
             matches[k] = np.where(hit, idx, -1)
         good = np.flatnonzero(support >= min_detections)
@@ -147,8 +155,10 @@ def link(dets: List[FrameDetections], times: np.ndarray, t_ref: float, v_min: fl
             v_fit = np.hypot(xs[-1] - xs[0], ys[-1] - ys[0]) / max(times[fr[-1]] - times[fr[0]], 1e-6)
             if len(members) >= 5:
                 amax = accel_bound(v_fit) if accel_bound else 0.0
+            elif curve_bound and min(dets[k].z[m] for k, m in members) >= curve_min_z:
+                amax = curve_bound(v_fit)
             else:
-                amax = curve_bound(v_fit) if curve_bound else 0.0
+                amax = 0.0
             tr = _lsq_track(fr, xs, ys, times, t_ref, amax, curve_resid=2.0 * sigma_pos)
             new = []
             for k in range(n):
@@ -174,7 +184,21 @@ def link(dets: List[FrameDetections], times: np.ndarray, t_ref: float, v_min: fl
         for mem in c.members:
             for owner in used_by.get(mem, ()):
                 overlap[owner] = overlap.get(owner, 0) + 1
-        if any(v >= 2 for v in overlap.values()):
+        # Drop a tracklet sharing >= 2 detections with a stronger one only if
+        # it is the same path (within dedupe_px at every one of its frames);
+        # a different path through two shared detections (a curved chance
+        # link outranking a real mover) is kept.
+        fr = np.array([k for k, _ in c.members])
+        cx, cy = c.track.position(times[fr])
+        same = False
+        for owner, cnt in overlap.items():
+            if cnt < 2:
+                continue
+            ox, oy = kept[owner].track.position(times[fr])
+            if np.max(np.hypot(cx - ox, cy - oy)) < dedupe_px:
+                same = True
+                break
+        if same:
             continue
         idx = len(kept)
         kept.append(c)

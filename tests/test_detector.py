@@ -277,3 +277,56 @@ def test_refine_on_fixed_frames_keeps_them():
     frames = np.array([True, False, True, True, False])
     r = ev.refine(Track(0.0, 0.0, 1.0, 0.0, 0.2), accel_max=0.0, frames=frames)
     assert r.used.tolist() == frames.tolist()
+
+
+def test_link_curvature_only_between_strong_detections():
+    # A fast mover on a strongly curved path, in 3 frames; a straight chord
+    # through two of its detections misses the third by several px.
+    times = 57000.0 + np.array([0.0, 0.15, 0.40])
+    t_ref = times.mean()
+    x0, y0, vx, vy, ax = 300.0, 300.0, 1200.0, 0.0, 600.0  # px/day, px/day^2
+
+    def dets_for(z):
+        out = []
+        for t in times:
+            dt = t - t_ref
+            out.append(FrameDetections(np.array([x0 + vx * dt]),
+                                       np.array([y0 + vy * dt + 0.5 * ax * dt * dt]),
+                                       np.array([z])))
+        return out
+
+    kw = dict(v_min=5.0, v_max=5000.0, min_detections=3, curve_bound=lambda v: 800.0,
+              accel_bound=lambda v: 800.0, curve_min_z=7.0)
+    assert not link(dets_for(9.0), times, t_ref, v_min=5.0, v_max=5000.0, min_detections=3)
+    strong = link(dets_for(9.0), times, t_ref, **kw)
+    assert strong and len(strong[0].members) == 3
+    assert abs(strong[0].track.ay) == pytest.approx(ax, rel=0.05)
+    assert not link(dets_for(5.0), times, t_ref, **kw)  # weak detections: no allowance
+
+
+def test_link_keeps_different_path_through_two_shared_detections():
+    from neodetect.trackfit import Track
+
+    times = 57000.0 + np.arange(6) * 0.1
+    t_ref = times.mean()
+    a = Track(100.0, 100.0, 300.0, 0.0, t_ref)  # straight, 3 detections
+    c = 4000.0  # px/day^2: B leaves A after frame 1
+
+    def b_pos(t):
+        x, y = a.position(t)
+        return x, y + c * (t - times[0]) * (t - times[1])
+
+    xs, ys = [[] for _ in times], [[] for _ in times]
+    for k, t in enumerate(times):
+        if k in (0, 1, 3):
+            x, y = a.position(t)
+            xs[k].append(float(x)); ys[k].append(float(y))
+        if k in (2, 4, 5):
+            x, y = b_pos(t)
+            xs[k].append(float(x)); ys[k].append(float(y))
+    dets = [FrameDetections(np.array(x), np.array(y), np.full(len(x), 9.0)) for x, y in zip(xs, ys)]
+    out = link(dets, times, t_ref, v_min=5.0, v_max=5000.0, min_detections=3,
+               accel_bound=lambda v: 1e4, curve_bound=lambda v: 1e4, curve_min_z=7.0)
+    members = [sorted(k for k, _ in t.members) for t in out]
+    assert [0, 1, 2, 4, 5] in members  # B, the stronger (5 detections)
+    assert any(m == [0, 1, 3] for m in members)  # A, sharing B's frames 0-1

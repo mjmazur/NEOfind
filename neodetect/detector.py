@@ -106,11 +106,16 @@ class DetectorConfig:
     # straight vs 40.3 curved).
     accel_min_frames: int = 4
     # Linker: allow for close-object curvature when matching to a pair's
-    # chord and seed 3-4-detection tracklets curved (``linking``). Off: on
-    # real_v2 it recovered 4 bright fast curved movers but lost 2 and raised
-    # scrambled-copy false tracks (fast, curved: 8.6 -> 11.4 in v012); it
-    # needs its own threshold for the extra trials before it's on.
-    link_curvature: bool = False
+    # chord and seed 3-4-detection tracklets curved (``linking``), only
+    # between detections of z >= link_curve_min_z. Without that gate it
+    # raised scrambled-copy false tracks (fast, curved chance alignments of
+    # faint peaks: 8.6 -> 11.4 in v012) and netted nothing once the fast
+    # class's thresholds were raised to compensate; with it (and the
+    # path-aware tracklet dedupe in ``link``), on 15 scrambled copies and 15
+    # real_v2 injected runs: no extra false tracks, fast movers 49 -> 51 of
+    # 97, nothing lost.
+    link_curvature: bool = True
+    link_curve_min_z: float = 7.0
     # Straight refit of < accel_min_frames tracks: also try it on the curved
     # fit's own frames, and keep the better consistent fit (a W1 14.1
     # 1.06 deg/day mover on 3 frames failed consistency on a 4th frame the
@@ -312,7 +317,8 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
                          min_detections=cfg.min_detections, sigma_pos=cfg.link_sigma_pos_px,
                          accel_bound=lambda v: _accel_bound_px(cfg, v, scale),
                          curve_bound=(lambda v: _curve_bound_px(cfg, v, scale))
-                         if cfg.link_curvature else None, log=log)
+                         if cfg.link_curvature else None,
+                         curve_min_z=cfg.link_curve_min_z, log=log)
         seeds += [tl.track for tl in tracklets]
         timing["link_s"] = time.time() - t
         stats.update(n_sources=[len(d) for d in dets], n_tracklets=len(tracklets))

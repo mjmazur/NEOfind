@@ -410,6 +410,27 @@ sweep.py, tests/
       fast movers gain, a narrower version may pay: allow for curvature
       only when every linked detection is strong (z ≥ ~7), which chance
       alignments of noise peaks rarely are.
+    - That gate, tested (same 15 + 15 runs, against m4g): z ≥ 5 left one
+      extra false track (10.1, 4 frames, v011); z ≥ 7 none, fast movers 49
+      → 50. Every curved variant lost one asteroid (W1 15.1, 0.7 deg/day):
+      a curved chance tracklet with more detections shared two of its
+      detections, and the linker dropped any tracklet sharing ≥ 2
+      detections with a stronger one. Dropping it only when it is the same
+      path (within 2 px at all its frames) fixes that; alone it changes
+      nothing on the sample. z ≥ 7 + that dedupe: fast movers 49 → 51 of 97
+      (bright 28 → 29 of 33), slower ones unchanged, no extra false tracks.
+      Now the default (`link_curvature`, `link_curve_min_z` 7). Full rerun
+      (`detections_m4h.json`, also with the refit fix) against m4g: no
+      false tracks on any null run (72 simulated, 45 real); `wise_v1`
+      unchanged; `wise_v2` +2 fast movers (1.9, 2.6 deg/day); `real_v2` +5
+      (1.1–2.3 deg/day; W1 14–15 0.96 / 0.93 → 1.00 / 0.95, 2–5 deg/day
+      0.33 → 0.43), none lost; `real_v1` +1 / −1. The bulge visit v011
+      has many z ≥ 7 star residuals, so the allowance applies often there:
+      its one-copy null levels rose 8.2 / 8.4 → 8.8 / 8.7 and a 3-frame null
+      9.7 → 10.05, so the real 3-frame threshold is 10.25 (was 10.0) and
+      the guard level 8.8 (was 8.4); ratios 1.30 / 1.31 / 1.45. The one
+      loss (v011, W1 15.6) is found as a 3-frame 9.8 instead of a 4-frame
+      9.6.
   - Open from M4: bright fast movers (linker curvature, above);
     the global thresholds rest on 15 ecliptic visits -- recheck the guard
     level on new sky (Galactic plane).

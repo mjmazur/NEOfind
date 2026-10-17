@@ -63,13 +63,14 @@ NULL_RANK = 5
 # vetting; 15 visits x 3 scrambled copies, held-out copies, <= 0.05 false
 # detections per visit: 0 found). Recalibrate with ``neodetect evaluate``
 # (``per_visit.ratios``) after detector changes.
-NULL_RATIO = {"3": 1.30, "4": 1.32, "5+": 1.46}
+NULL_RATIO = {"3": 1.30, "4": 1.31, "5+": 1.45}
 # Guard mode: a visit's thresholds are raised by level / GUARD_LEVEL when
 # its null level (one scrambled copy) exceeds the highest single-copy level
-# of the calibration sample (sims/real_v1, final M4 detector: 8.39 in v011;
-# median 7.1). Held out per visit this matched global thresholds' false
-# rate (0.044 per copy) where per-visit thresholds gave 0.089.
-GUARD_LEVEL = 8.4
+# of the calibration sample (sims/real_v1, final M4 detector: 8.76 in the
+# bulge visit v011 with curved linking, 8.39 without; median 7.1). Held out
+# per visit this matched global thresholds' false rate (0.044 per copy)
+# where per-visit thresholds gave 0.089.
+GUARD_LEVEL = 8.8
 VETO_RADIUS_ARCSEC = 60.0
 VETO_MIN_RATIO = 1.2
 

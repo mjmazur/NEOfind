@@ -158,9 +158,9 @@ def default_null_scrambles(frame: "Frame") -> int:
 
 
 # Detection thresholds (3 / 4 / >= 5 frames) calibrated on real NEOWISE W1
-# single exposures (sims/real_v1, final M4 detector, 45 scrambled nulls,
-# <= 0.05 false per visit; held out per visit: 0.044).
-REAL_WISE_THRESHOLDS = (10.0, 9.25, 10.25)
+# single exposures (sims/real_v1, final M4 detector incl. gated curved
+# linking, 45 scrambled nulls, <= 0.05 false per visit: 0 found).
+REAL_WISE_THRESHOLDS = (10.25, 9.25, 10.25)
 
 
 def default_thresholds(frame: "Frame"):
