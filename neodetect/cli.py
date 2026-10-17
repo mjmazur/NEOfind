@@ -122,7 +122,7 @@ def cmd_detect(args) -> int:
     if n_null:
         from . import nullcal
         ratios = dict(zip(nullcal.FRAME_CLASSES, args.null_ratio)) if args.null_ratio else None
-        mode = args.null_mode or ("per-visit" if ratios else "guard")
+        mode = args.null_mode or "per-visit"
         c = doc["config"]  # thresholds as resolved for this instrument
         base = {"3": c["detect_threshold_3"], "4": c["detect_threshold_4"], "5+": c["detect_threshold"]}
         cal = nullcal.self_calibrate(seq, cfg, n=n_null, ratios=ratios, log=log, mode=mode,
@@ -256,8 +256,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "candidates that recur in the copies. 0 = off (default: 1 for real "
                         "WISE frames, else 0)")
     d.add_argument("--null-mode", choices=("guard", "per-visit"), default=None,
-                   help="what the scrambled copies set (default: guard; per-visit with "
-                        "--null-ratio)")
+                   help="what the scrambled copies set: per-visit (default; the visit's null "
+                        "level x NULL_RATIO) or guard (the instrument's global thresholds, "
+                        "raised only for an unusually noisy visit)")
     d.add_argument("--null-ratio", type=float, nargs=3, metavar=("R3", "R4", "R5"),
                    help="per-visit mode: threshold / null level for 3, 4, >=5 frames (default: "
                         "the real-NEOWISE calibration in nullcal; `evaluate` prints new ones)")

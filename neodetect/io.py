@@ -160,17 +160,19 @@ def _is_real_wise(h: fits.Header) -> bool:
 
 def default_null_scrambles(frame: "Frame") -> int:
     """Time-scrambled copies ``neodetect detect`` runs (``nullcal``): 1 for
-    real WISE frames, as a guard that raises the thresholds of a visit far
-    noisier than the calibration sample (and feeds the artifact veto), else
-    0. Per-visit thresholds proper (2 copies) didn't beat global ones held
-    out once the M4 artifact handling evened the visits out."""
+    real WISE frames, whose per-visit thresholds (the copy's null level x
+    ``NULL_RATIO``) follow a false-alarm tail that varies by ~2x across the
+    sky (Galactic plane, bulge), and which feeds the artifact veto; else 0.
+    A second copy didn't help held out (30 visits)."""
     return 1 if _is_real_wise(frame.header) else 0
 
 
-# Detection thresholds (3 / 4 / >= 5 frames) calibrated on real NEOWISE W1
-# single exposures (sims/real_v1, final M4 detector incl. gated curved
-# linking, 45 scrambled nulls, <= 0.05 false per visit: 0 found).
-REAL_WISE_THRESHOLDS = (10.25, 9.25, 10.25)
+# Fixed detection thresholds (3 / 4 / >= 5 frames) for real NEOWISE W1 when
+# no scrambled copy is run (--null-scrambles 0): calibrated on the 17 quiet
+# visits (median one-copy null level <= 7.5) of sims/real_v1 + real_v3, so
+# valid away from the Galactic plane only; plane and bulge fields need the
+# per-visit thresholds (nullcal), which are the default.
+REAL_WISE_THRESHOLDS = (10.25, 9.25, 11.75)
 
 
 # The simulator's ``ground`` preset (sims/sweeps/ground_v1: 24 null runs,

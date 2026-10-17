@@ -219,30 +219,38 @@ Pipeline:
    then agrees with the catalog to 0.02″ along and 0.06″ across its track
    (0.46″ before). Injections draw their stamps at the same offset.
 
-**Thresholds on real WISE** (`io.default_thresholds`, `nullcal.py`). Real
-NEOWISE frames get their own calibration (10.25 / 9.25 / 10.25 for 3 / 4 /
-≥5-frame tracks, from `sims/real_v1`); `--threshold*` overrides it.
-`detect` also runs the detector on one time-scrambled copy of the visit
-(`--null-scrambles N`, default 1 on real WISE frames, 0 = off), whose
-*null level* (5th-highest candidate score) serves two purposes:
+**Thresholds on real WISE** (`nullcal.py`, `io.default_thresholds`).
+`detect` runs the detector on one time-scrambled copy of the visit
+(`--null-scrambles N`, default 1 on real WISE frames, 0 = off). Its *null
+level* (5th-highest candidate score) sets the visit's thresholds,
+level × 1.81 / 1.62 / 1.66 for 3 / 4 / ≥ 5-frame tracks (`--null-ratio`),
+and the copy gives an **artifact veto**: a candidate within 60″ (at the
+reference time) of a scrambled-copy candidate scoring ≥ 1.2× the null
+level is rejected, as something that recurs whatever the frame order isn't
+moving.
 
-- **Guard** (default `--null-mode guard`): if the level exceeds the highest
-  single-copy level of the calibration sample (`GUARD_LEVEL` 8.8; median
-  7.1), the thresholds are raised in proportion, for a sky region noisier
-  than anything calibrated on (none of the 15 calibration visits is).
-- **Artifact veto:** a candidate within 60″ (at the reference time) of a
-  scrambled-copy candidate scoring ≥ 1.2× the null level is rejected, as
-  something that recurs whatever the frame order isn't moving.
+The false-alarm tail varies by ~2× across the sky: null levels are
+6.5–8 along the ecliptic and at high latitude, 9–12 in the Galactic plane
+and 11–16 toward the bulge. The factors are calibrated on 30 visits
+(`sims/real_v1` + `sims/real_v3`, 11 in the plane). Held out one visit at
+a time (calibrated on the other 29):
 
-Per-visit thresholds proper (`--null-mode per-visit`, or `--null-ratio`;
-level × 1.30 / 1.31 / 1.45, best with 2 copies) were the default until the
-M4 artifact handling evened the visits out. Held out one visit at a time
-(calibrated on the other 14), global thresholds gave 0.044 false
-detections per null copy and per-visit ones 0.089, at slightly lower
-completeness (0.63 vs 0.68 at W1 15.5–16): they also lower the bar in the
-quietest visits. The guard matched global (0.044) for one extra detector
-run instead of two. `evaluate` reports global, per-visit and guard
-schemes.
+| scheme | false per null copy | W1 15–15.5 / 15.5–16 / 16–16.5, off plane | in plane |
+|---|---|---|---|
+| per-visit, 1 copy (default) | 0.067 | 0.92 / 0.65 / 0.11 | 0.61 / 0.15 / 0.00 |
+| per-visit, 2 copies | 0.078 | 0.92 / 0.63 / 0.10 | 0.59 / 0.12 / 0.00 |
+| global thresholds | 0.122 | 0.80 / 0.35 / 0.00 | 0.57 / 0.03 / 0.00 |
+| guard (global, raised for noisy visits) | 0.011 | 0.80 / 0.35 / 0.00 | 0.53 / 0.03 / 0.00 |
+
+Global thresholds calibrated across such a sky are set by the plane and
+cost completeness everywhere else. (On the 15 ecliptic visits of
+`real_v1` alone the opposite seemed true -- per-visit thresholds gained
+nothing there -- because those visits are alike.) In the bulge (null
+levels up to 15.7) the thresholds reach 20–26 and practically nothing is
+detected. Without scrambled copies (`--null-scrambles 0`) real WISE uses
+fixed thresholds 10.25 / 9.25 / 11.75 calibrated on the 17 quiet visits:
+valid away from the plane only. `--null-mode guard` keeps those fixed
+thresholds and raises them only above the null level `GUARD_LEVEL` (8.8).
 
 **Reporting** (`report.py`): `--ades FILE` writes ADES PSV for the MPC,
 one row per frame a detection uses: the track position at that frame's
@@ -352,12 +360,14 @@ and the real 50% point was W1 ≈ 15.4.
   remains is one event in the real frame order (v012, a 10.9 3-frame track
   on two bright-star wings and one faint source), which no scrambled copy
   reproduces by position, plus an asteroid seen in one frame only.
-- **Per-visit vs global thresholds:** with the artifacts handled, visits
-  are alike (null levels 6.7–8.8), and per-visit thresholds no longer
-  help: 0.93 / 0.62 / 0.16 vs 0.95 / 0.66 / 0.16 global at W1 15–15.5 /
-  15.5–16 / 16–16.5 (`real_v1`), and twice the false rate held out per
-  visit. Real WISE now uses the global thresholds plus a one-copy guard
-  (above), which on this sample raises no visit.
+- **New sky** (`sims/real_v3`): 15 more visits -- 11 in the Galactic plane
+  (on and off the ecliptic, including two bulge fields), plus high-latitude
+  and ecliptic controls. Off the plane they behave like `real_v1`; in the
+  plane the null tails are much heavier (above), mostly slow tracks
+  threading faint, partly variable stars, plus a few frames with 10× the
+  usual number of peaks (5% of frames, 12% of false-track frames). The
+  numbers in the table above are for these ecliptic visits; see the
+  threshold section for the 30-visit, held-out comparison.
 - **Curved injections** (`real_v2`) are found as well as straight ones at
   W1 ≥ 15; the bright, fast ones (W1 14–15) at 0.95–1.00 (0.93–0.96
   before curved linking, which recovered 5 movers of 1.1–2.3 deg/day;

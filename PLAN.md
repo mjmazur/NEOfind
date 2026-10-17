@@ -441,7 +441,30 @@ sweep.py, tests/
     source, as `cc_flags` in the single-exposure catalog); using them would
     need a catalog query per visit -- left for when the new visits show
     whether bright-star false alarms still matter.
-  - Open from M4: bright fast movers (linker curvature, above);
+  - New sky (`sims/real_v3`, 15 visits: 11 Galactic plane incl. 2 bulge
+    fields, high-latitude and ecliptic controls; 4 downloads interrupted by
+    IRSA 503s and refetched; the bulge needed a relaxed ePSF star
+    selection). Out of sample, the `real_v1` calibration failed in the
+    plane: null levels 9–12 (bulge 11–16) vs 6.5–8 elsewhere; global
+    thresholds gave ~2 false per copy there, the guard 0.9. Held out one
+    visit at a time over all 30 visits: per-visit thresholds from one copy
+    0.067 false per copy, completeness 0.92 / 0.65 / 0.11 at W1 15 / 15.5
+    / 16 off the plane (0.61 / 0.15 / 0.00 in it); global thresholds and
+    the guard 0.35 at 15.5–16 off the plane (set by the plane); a floor on
+    quiet-sky thresholds 0.078 and about the same completeness. So
+    per-visit mode with one copy is the real-WISE default again,
+    `NULL_RATIO` 1.81 / 1.62 / 1.66; fixed real-WISE thresholds (no
+    copies) 10.25 / 9.25 / 11.75 from the 17 quiet visits, valid off the
+    plane. The `real_v1`-only conclusion (global beats per-visit) came from
+    a sample of alike visits. Plane false tracks: about half thread faint
+    static (partly variable) stars -- rejecting tracks with every frame on
+    a static source would remove 6–50% of them, losing no asteroids; and
+    heavy-tailed frames (5% of frames, 10× the usual peaks) carry 12% of
+    false-track frames -- a per-frame tail calibration would help there.
+    The bulge (null levels to 15.7, 26 min per run at the refine cap) is
+    effectively unsearchable at WISE resolution.
+  - Open from M4: per-frame tail calibration; star-coincidence vetting in
+    the plane; bright fast movers (linker curvature, above);
     the global thresholds rest on 15 ecliptic visits -- recheck the guard
     level on new sky (Galactic plane).
 - Real-data limits found in M3, and what became of them:

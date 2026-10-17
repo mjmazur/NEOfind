@@ -28,18 +28,22 @@ thresholds then perform alike (0.62 vs 0.68 at W1 15.5-16); held out one
 visit at a time, per-visit thresholds gave twice the false rate of global
 ones (0.089 vs 0.044 per copy).
 
-So the real-WISE default is now **guard** mode: the instrument's global
-thresholds (``io.default_thresholds``), raised in proportion only when the
-visit's null level from one scrambled copy exceeds ``GUARD_LEVEL``, the
-highest single-copy level of the calibration sample; held out this matched
-global thresholds (0.044). Per-visit mode (level x ``NULL_RATIO``) remains
-available.
+A second sample of 15 visits (sims/real_v3: 11 in the Galactic plane, the
+bulge, off-ecliptic fields) reversed that: plane fields have null levels of
+9-12 and the bulge 11-16, against 6.5-8 elsewhere, and global thresholds
+calibrated on the ecliptic visits gave ~2 false detections per scrambled
+copy there. Held out one visit at a time over all 30 visits, per-visit
+thresholds from one copy gave 0.067 false per copy with completeness 0.65
+at W1 15.5-16 off the plane (0.15 in it); global thresholds (dominated by
+the plane) gave 0.35 off the plane, and the guard below -- global
+thresholds raised by level / GUARD_LEVEL -- the same. So per-visit mode is
+the real-WISE default again (one copy; a second didn't help). Guard mode
+remains available.
 
 In production ``self_calibrate`` scrambles the frame times of the sequence
 being searched, runs the detector on the copies, and returns the thresholds
-(``neodetect detect --null-scrambles N``, default 1 for real WISE frames;
-for per-visit mode use 2: on the Oceana visit single copies gave levels of
-7.7-8.4); each copy costs one detector run.
+(``neodetect detect --null-scrambles N``, default 1 for real WISE frames);
+each copy costs one detector run.
 
 **Artifact veto.** Some false tracks recur at the same place in every
 scrambled copy: a fixed artifact (scattered light along a cutout edge in a
@@ -58,12 +62,13 @@ import numpy as np
 
 FRAME_CLASSES = ("3", "4", "5+")
 NULL_RANK = 5
-# Calibrated on real NEOWISE W1 single exposures (sims/real_v1 with the
-# final M4 detector incl. streak mask, artifact veto and single-frame
-# vetting; 15 visits x 3 scrambled copies, held-out copies, <= 0.05 false
-# detections per visit: 0 found). Recalibrate with ``neodetect evaluate``
+# Calibrated on real NEOWISE W1 single exposures: 30 visits x 3 scrambled
+# copies (sims/real_v1 along the ecliptic, sims/real_v3 incl. 11 Galactic-
+# plane fields), final M4 detector, held-out copies, <= 0.05 false per visit.
+# Held out one visit at a time (calibrated on the other 29): 0.067 false per
+# copy with the level from one copy. Recalibrate with ``neodetect evaluate``
 # (``per_visit.ratios``) after detector changes.
-NULL_RATIO = {"3": 1.30, "4": 1.31, "5+": 1.45}
+NULL_RATIO = {"3": 1.81, "4": 1.62, "5+": 1.66}
 # Guard mode: a visit's thresholds are raised by level / GUARD_LEVEL when
 # its null level (one scrambled copy) exceeds the highest single-copy level
 # of the calibration sample (sims/real_v1, final M4 detector: 8.76 in the
