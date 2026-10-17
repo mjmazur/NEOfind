@@ -105,6 +105,17 @@ class DetectorConfig:
     # consecutive frames real curvature is ~1 px (a 1.7 deg/day NEO: 38.2
     # straight vs 40.3 curved).
     accel_min_frames: int = 4
+    # Linker: allow for close-object curvature when matching to a pair's
+    # chord and seed 3-4-detection tracklets curved (``linking``). Off: on
+    # real_v2 it recovered 4 bright fast curved movers but lost 2 and raised
+    # scrambled-copy false tracks (fast, curved: 8.6 -> 11.4 in v012); it
+    # needs its own threshold for the extra trials before it's on.
+    link_curvature: bool = False
+    # Straight refit of < accel_min_frames tracks: also try it on the curved
+    # fit's own frames, and keep the better consistent fit (a W1 14.1
+    # 1.06 deg/day mover on 3 frames failed consistency on a 4th frame the
+    # straight line reached; no change on scrambled copies).
+    straight_refit_fixed_frames: bool = True
 
     # Repeat the cosmic-ray tests with the static sky subtracted (``register``):
     # a hit on a star is as broad as the star in the first pass.
@@ -227,6 +238,14 @@ def _path_extent(track: Track, times) -> float:
     return float(np.max(np.hypot(x[:, None] - x[None], y[:, None] - y[None])))
 
 
+def _curve_bound_px(cfg: DetectorConfig, speed_px_day: float, scale_arcsec: float) -> float:
+    """Curvature (px/day^2) the linker allows for: the close-object term of
+    the bound only (``accel_per_rate2`` x rate^2), which matters above
+    ~0.5 deg/day; over a visit main-belt curvature is < 1 px."""
+    rate = speed_px_day * scale_arcsec / 3600.0
+    return cfg.accel_per_rate2 * rate * rate / scale_arcsec
+
+
 def _straight(track: Track, times) -> Track:
     """The straight track through ``track``'s positions at ``times`` (least
     squares): dropping the acceleration alone would move a track far from
@@ -291,7 +310,9 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
         tracklets = link(dets, times, t_ref, v_stationary,
                          deg_day_to_px(cfg.link_rate_max, scale),
                          min_detections=cfg.min_detections, sigma_pos=cfg.link_sigma_pos_px,
-                         accel_bound=lambda v: _accel_bound_px(cfg, v, scale), log=log)
+                         accel_bound=lambda v: _accel_bound_px(cfg, v, scale),
+                         curve_bound=(lambda v: _curve_bound_px(cfg, v, scale))
+                         if cfg.link_curvature else None, log=log)
         seeds += [tl.track for tl in tracklets]
         timing["link_s"] = time.time() - t
         stats.update(n_sources=[len(d) for d in dets], n_tracklets=len(tracklets))
@@ -343,7 +364,18 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
     for tr in chosen:
         r = evaluator.refine(tr, accel_max=_accel_bound_px(cfg, tr.speed, scale))
         if r is not None and r.n_used < cfg.accel_min_frames and (r.track.ax or r.track.ay):
-            r = evaluator.refine(_straight(r.track, times[r.used]), accel_max=0.0)
+            # Refit straight with frames re-selected, and on the curved fit's
+            # frames only: a straight line through a curved path's frames can
+            # reach frames the object never visits, whose zero flux then fails
+            # the consistency test (re-selection can also find a better set).
+            # Keep the better, consistent one first.
+            s0 = _straight(r.track, times[r.used])
+            tries = [evaluator.refine(s0, accel_max=0.0)]
+            if cfg.straight_refit_fixed_frames:
+                tries.append(evaluator.refine(s0, accel_max=0.0, frames=r.used))
+            fits = [f for f in tries if f is not None]
+            r = max(fits, key=lambda f: (f.consistency_p(cfg.frac_tol) >= cfg.min_consistency_p,
+                                         f.score)) if fits else None
         if r is None or r.score < cfg.report_threshold:
             continue
         if _path_extent(r.track, times) < min_path or r.n_used < cfg.min_frames:

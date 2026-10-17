@@ -382,7 +382,35 @@ sweep.py, tests/
     0.65 / 0.14. Now the real-WISE default: `io.default_thresholds` (10.0 /
     9.25 / 10.25), `--null-scrambles` 1, `--null-mode guard` (per-visit
     still available); `evaluate` reports the guard scheme.
-  - Open from M4: bright fast movers in `real_v2` (0.93–0.96 at W1 14–15);
+  - Bright fast movers in `real_v2` (8 of 197 at W1 < 15 missed, all
+    1.1–2.9 deg/day on 3–5 frames, none in `real_v1`'s straight paths):
+    all search failures, not thresholds. Causes: the linker predicts a
+    pair's other frames on a straight chord, which a fast curved path
+    misses by 2–7 px, and fits curvature only from 5 detections, so a
+    3-4-detection seed starts straight and refines to an inconsistent
+    optimum; and the straight refit of a 3-frame track reached a 4th frame
+    the curved object never visits (zero flux, consistency p = 0). Two of
+    the 8 are faint (ideal SNR 7, 11).
+    - Straight refit also tried on the curved fit's own frames, keeping
+      the better consistent fit (`straight_refit_fixed_frames`, on):
+      recovers that one, no losses, scrambled copies unchanged.
+    - Linker curvature (`link_curvature`, off): match radius widened by
+      the close-object curvature bound (500 × rate²) and 3-4-detection
+      seeds fitted curved. Recovered 4 more but lost 2 (W1 14.3, 15.1;
+      not traced) and raised scrambled-copy false tracks with fast curved
+      chance alignments (v012 8.6 → 11.4, v011 9.2 → 10.1, v010 8.1 → 9.1).
+      Tested with a separate threshold for its extra trials: one scrambled
+      copy per visit and one `real_v2` injected run per visit (15 + 15),
+      against m4f. Tracks >= 0.5 deg/day need thresholds x 1.1 to get back
+      to 0 false (4 in 15 copies at x 1.0, all fast and curved, mostly the
+      bulge visit v011); then fast movers found 49 → 48 of 97 (bright ones
+      28 → 30 of 33, fainter ones lose to the higher threshold), slower
+      ones unchanged (105 / 154). A 1 deg/day split can't reach 0 false (a
+      10.1 at 0.95 deg/day). Net nothing: it stays off. Since only bright
+      fast movers gain, a narrower version may pay: allow for curvature
+      only when every linked detection is strong (z ≥ ~7), which chance
+      alignments of noise peaks rarely are.
+  - Open from M4: bright fast movers (linker curvature, above);
     the global thresholds rest on 15 ecliptic visits -- recheck the guard
     level on new sky (Galactic plane).
 - Real-data limits found in M3, and what became of them:

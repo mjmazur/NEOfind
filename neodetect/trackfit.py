@@ -249,11 +249,13 @@ class TrackEvaluator:
         return TrackScore(track=track, score=s, score_all=float(num[covered].sum() / math.sqrt(d_all)),
                           used=used, covered=covered, num=num, den=den)
 
-    def refine(self, track: Track, rounds: int = 3, accel_max: float = 0.0) -> Optional[TrackScore]:
+    def refine(self, track: Track, rounds: int = 3, accel_max: float = 0.0,
+               frames: Optional[np.ndarray] = None) -> Optional[TrackScore]:
         """Maximize S over (x0, y0, vx, vy) -- and (ax, ay), bounded by
         ``accel_max`` px/day^2 per axis (or the seed's own, if larger), when
-        that is > 0 -- re-selecting frames between rounds."""
-        best = self.score(track)
+        that is > 0 -- re-selecting frames between rounds, or on ``frames``
+        (bool mask) only."""
+        best = self.score(track, used=frames)
         if best is None:
             return None
         tau = max(float(np.max(np.abs(self.times - track.t_ref))), 1e-3)
@@ -279,7 +281,7 @@ class TrackEvaluator:
             res = minimize(neg, np.zeros(npar), method="Nelder-Mead",
                            options={"xatol": 0.02, "fatol": 1e-3, "maxfev": 100 * npar,
                                     "initial_simplex": np.vstack([np.zeros(npar), np.eye(npar)])})
-            cand = self.score(track.with_params(params(res.x)))
+            cand = self.score(track.with_params(params(res.x)), used=frames)
             if cand is None or cand.score <= best.score + 1e-3:
                 break
             best = cand

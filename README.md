@@ -155,7 +155,9 @@ Pipeline:
    is max(60, 150 × rate, 500 × rate²) "/day² (rate in deg/day). The rate²
    term is for close objects, whose rate changes with their distance.
    Tracks using fewer than 4 frames are fitted straight: with 3 frames a
-   curved path fits any 3 points.
+   curved path fits any 3 points. The straight fit is tried both with
+   frames re-selected and on the curved fit's own frames (a straight line
+   through a curved path can reach frames the object never visits).
    A final track's path is re-fitted on its fully covered frames (≥ 90%
    of the PSF on valid pixels). Otherwise the fit can bend the path toward
    valid pixels to keep a partly masked frame; that put Lachesis's

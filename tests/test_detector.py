@@ -257,3 +257,23 @@ def test_release_drops_frames_near_stronger_track_even_if_uncovered():
     assert _release_shared_frames(weak, [strong], Ev(), times, tol_px=3.3) == "rescored"
     assert seen["used"].tolist() == [True, True, False, True, True]
     assert _release_shared_frames(weak, [strong], Ev(), times, tol_px=2.0) is weak
+
+
+def test_refine_on_fixed_frames_keeps_them():
+    from neodetect.trackfit import Track, TrackEvaluator
+    from types import SimpleNamespace
+
+    # Toy evaluator: score = sum of per-frame z on the given frames.
+    z = np.array([5.0, 0.0, 6.0, 7.0, -1.0])
+    ev = TrackEvaluator.__new__(TrackEvaluator)
+    ev.times = np.arange(5) * 0.1
+    ev.min_frames = 3
+
+    def score(track, used=None):
+        u = np.ones(5, bool) if used is None else used
+        return SimpleNamespace(score=float(z[u].sum()), used=u, track=track)
+
+    ev.score = score
+    frames = np.array([True, False, True, True, False])
+    r = ev.refine(Track(0.0, 0.0, 1.0, 0.0, 0.2), accel_max=0.0, frames=frames)
+    assert r.used.tolist() == frames.tolist()
