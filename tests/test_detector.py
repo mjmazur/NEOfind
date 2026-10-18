@@ -372,3 +372,21 @@ def test_cuda_kernel_logic_matches_reference():
 def test_cupy_backend_matches_reference():  # pragma: no cover
     from neodetect import backend
     assert backend.cupy_ok()
+
+
+def test_confusion_fraction_flags_crowded_fields():
+    from neodetect.detector import DetectorConfig, _confusion_frac
+
+    rng = np.random.default_rng(5)
+    covered = np.ones((100, 100), bool)
+    covered[:, 80:] = False  # uncovered sky doesn't count
+    sparse = np.zeros((100, 100), np.float32)
+    crowded = np.zeros((100, 100), np.float32)
+    for z, n in ((sparse, 30), (crowded, 1500)):
+        ys, xs = rng.integers(0, 100, n), rng.integers(0, 80, n)
+        z[ys, xs] = 6.0  # each star covers a 3x3 box
+    cfg = DetectorConfig()
+    f_sparse = _confusion_frac(sparse, covered, cfg.static_source_z)
+    f_crowded = _confusion_frac(crowded, covered, cfg.static_source_z)
+    assert 0.02 < f_sparse < 0.04 < cfg.crowded_frac < f_crowded
+    assert _confusion_frac(crowded, np.zeros_like(covered), 3.0) == 0.0

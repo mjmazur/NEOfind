@@ -55,6 +55,9 @@ def _add_detector_args(p: argparse.ArgumentParser) -> None:
                    help=f"... using 3 frames (default: instrument's, else {d.detect_threshold_3})")
     g.add_argument("--report-threshold", type=float, default=d.report_threshold,
                    help=f"keep candidates above this for diagnostics (default: {d.report_threshold})")
+    g.add_argument("--skip-crowded", action="store_true",
+                   help=f"skip the search in a crowded field (>= {d.crowded_frac:.0%} of the sky "
+                        "on static sources, e.g. the Galactic bulge): flagged either way")
     g.add_argument("--threads", type=int, default=0, help="threads (default: all cores)")
 
 
@@ -98,6 +101,14 @@ def _status_text(d) -> str:
     return s
 
 
+def _print_crowded(doc) -> None:
+    st = doc["stats"]
+    if st.get("crowded"):
+        what = ("search skipped" if st.get("skipped") else
+                "expect false candidates and low completeness")
+        print(f"crowded field: {st['confusion_frac']:.0%} of the sky lies on static sources -- {what}")
+
+
 def _print_suspects(doc, where) -> None:
     from .review import REVIEWABLE
     rows = [i for i, d in enumerate(doc["detections"])
@@ -138,7 +149,7 @@ def cmd_detect(args) -> int:
     if n_null is None:
         from .io import default_null_scrambles
         n_null = default_null_scrambles(seq.frames[0])
-    if n_null:
+    if n_null and not doc["stats"].get("skipped"):
         from . import nullcal
         ratios = dict(zip(nullcal.FRAME_CLASSES, args.null_ratio)) if args.null_ratio else None
         mode = args.null_mode or "per-visit"
@@ -170,6 +181,7 @@ def cmd_detect(args) -> int:
     if "known_eval" in doc:
         _print_known(doc, seq.known)
     print(f"wrote {out}")
+    _print_crowded(doc)
     _print_suspects(doc, out if out.name != RESULT_NAME else out.parent)
     if args.ades:
         from .report import ades_rows, write_ades_psv
@@ -375,6 +387,7 @@ def cmd_review(args) -> int:
               else "no detections")
     elif catalog is None:
         print("no known.json: statuses are 'unchecked' (--skybot checks SkyBoT)")
+    _print_crowded(doc)
     confirmed = [i for i, d in enumerate(dets) if d["detected"]
                  and (d.get("review") or {}).get("verdict") == "confirmed"]
     if args.ades:

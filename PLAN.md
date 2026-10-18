@@ -463,6 +463,13 @@ sweep.py, tests/
     false-track frames -- a per-frame tail calibration would help there.
     The bulge (null levels to 15.7, 26 min per run at the refine cap) is
     effectively unsearchable at WISE resolution.
+  - Crowded-field flag (`crowded_frac` 0.45, `--skip-crowded`): the
+    fraction of covered sky within 1 px of a static source (z > 3) is
+    <= 0.34 on the 25 visits where injected W1 14.5-15.5 asteroids were
+    found reliably and >= 0.54 on the five bulge/plane fields with null
+    levels 9.4-14.8 and collapsed completeness. Flagged in the stats and
+    printed; `--skip-crowded` stops after registration (12 s instead of
+    hours on the bulge).
   - Suspected unknown asteroids (`review.py`, `neodetect review`):
     detections get a status (known / near-known / suspect / unchecked)
     against `known.json` (or SkyBoT, `--skybot`, any station); per suspect

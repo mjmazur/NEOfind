@@ -254,6 +254,16 @@ fixed thresholds 10.25 / 9.25 / 11.75 calibrated on the 17 quiet visits:
 valid away from the plane only. `--null-mode guard` keeps those fixed
 thresholds and raises them only above the null level `GUARD_LEVEL` (8.8).
 
+**Crowded fields.** After registration the detector measures the fraction
+of covered sky within 1 px of a static source (the frames' median sky
+above 3× the single-frame noise). From `crowded_frac` = 0.45 on, the
+visit is flagged `crowded` in the stats and the listing. Over 30 real NEOWISE visits the
+fraction was ≤ 0.34 wherever injected W1 14.5–15.5 asteroids were found
+reliably, and ≥ 0.54 in the five bulge and plane fields, where null levels
+reached 9.4–14.8 and completeness collapsed. `--skip-crowded` stops there
+(12 s on a bulge visit, instead of hours), with no candidates and no null
+calibration.
+
 **Reporting** (`report.py`): `--ades FILE` writes ADES PSV for the MPC,
 one row per frame a detection uses: the track position at that frame's
 time, uncertainties from the centroid error plus a 0.25" floor, and the

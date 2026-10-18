@@ -15,7 +15,7 @@ from .io import (Sequence, default_aperture_correction, default_aperture_ee, def
                  default_centroid_offset, world2pix)
 from .linking import link
 from .preprocess import Preprocessed, preprocess
-from .register import Registered, register
+from .register import Registered, _static_sky, register
 from .shiftstack import shift_and_stack
 from .sources import find_sources
 from .photometry import aperture_correction
@@ -79,6 +79,18 @@ class DetectorConfig:
     # >= 9 and none of 680 injected-asteroid detections. 0 = off.
     single_frame_max_frac: float = 0.6
     single_frame_min_rest: float = 8.0
+    # Static-source map: per grid pixel, the frames' median sky over the
+    # single-frame noise; a static source is above static_source_z.
+    static_source_z: float = 3.0
+    # Crowded fields: when >= crowded_frac of the covered sky lies within
+    # 1 px of a static source, the visit is flagged ``crowded`` in the
+    # stats, and with skip_crowded the search is skipped. Over 30 real
+    # NEOWISE visits the fraction was <= 0.34 wherever injected W1
+    # 14.5-15.5 asteroids were found reliably and >= 0.54 in the five
+    # Galactic bulge/plane fields where null levels reached 9.4-14.8 and
+    # completeness collapsed. 0 = off.
+    crowded_frac: float = 0.45
+    skip_crowded: bool = False
     # Frames where a candidate passes within this many PSF FWHM of a stronger
     # candidate are released (``_release_shared_frames``). 2 px covered-only
     # (M2-M4) left 1/3 of the unmatched detections in real_v1/real_v2
@@ -222,6 +234,25 @@ def _on_star_residuals(r: TrackScore, ref_err, cfg) -> bool:
     return bool(np.all(noisy & np.isfinite(ref)))
 
 
+def _static_significance(reg: Registered) -> np.ndarray:
+    """Per grid pixel, the frames' median sky over the single-frame noise."""
+    import warnings
+    static = _static_sky(reg.data, reg.valid)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        noise = np.sqrt(np.nanmedian(np.where(reg.valid, reg.var, np.nan), axis=0))
+        z = static / noise
+    return np.nan_to_num(z).astype(np.float32)
+
+
+def _confusion_frac(static_z: np.ndarray, covered: np.ndarray, z: float) -> float:
+    """Fraction of the covered grid within 1 px of a static source above ``z``."""
+    from scipy import ndimage
+    if not covered.any():
+        return 0.0
+    return float(np.mean(ndimage.maximum_filter(static_z, 3)[covered] > z))
+
+
 def _single_frame_dominated(r: TrackScore, cfg) -> bool:
     """True if, without its strongest used frame, the track keeps less than
     ``single_frame_max_frac`` of its score and that rest is below
@@ -307,6 +338,21 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
              "noise_alpha": pre.alpha.tolist(), "noise_beta": pre.beta,
              "snr_calibration": pre.calib.tolist(), "n_outlier_px": reg.n_outlier_px,
              "v_stationary_px_day": v_stationary, "aperture_correction": apc}
+
+    static_z = _static_significance(reg)
+    stats["confusion_frac"] = conf = _confusion_frac(static_z, pre.coverage >= min(3, reg.n),
+                                                     cfg.static_source_z)
+    stats["crowded"] = crowded = bool(cfg.crowded_frac and conf >= cfg.crowded_frac)
+    if crowded:
+        log(f"crowded field: {conf:.0%} of the sky lies on static sources (flag at "
+            f"{cfg.crowded_frac:.0%}): " + ("skipping the search" if cfg.skip_crowded else
+                                           "candidates are unreliable, completeness low"))
+        if cfg.skip_crowded:
+            stats.update(skipped="crowded", timing=timing)
+            evaluator = TrackEvaluator(pre, clip=cfg.clip_sigma, frac_tol=cfg.frac_tol,
+                                       min_frames=cfg.min_frames)
+            return DetectionResult(detections=[], config=cfg.to_dict(), stats=stats, reg=reg,
+                                   pre=pre, evaluator=evaluator, t_ref=t_ref)
 
     seeds: List[Track] = []
     if cfg.link:
