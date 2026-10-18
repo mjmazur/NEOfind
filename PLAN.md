@@ -477,6 +477,22 @@ sweep.py, tests/
     the user's verdicts (confirm / reject + note) go to `review.json`,
     matched by position so they survive reruns; confirmed ones export as
     ADES (trkSub).
+  - Bright fast movers: of injected W1 < 15 movers >= 0.6 deg/day on 3
+    frames, 47 of 58 found (on 4-6 frames 94 of 97). Five with truth SNR
+    25-75 had no candidate at all: NEOs a few tenths of an AU away whose
+    paths curve by several arcsec over three frames (WISE orbital
+    parallax); the curved 3-frame fit found them, the straight refit of
+    < 4-frame tracks failed consistency and dropped them. →
+    `keep_strong_curved`: keep the curved fit when every used frame has
+    z >= 7, the curvature is within the linker's bound, and fluxes are
+    consistent. Partial M4l rerun: on real_v3 v001 a kept curved track
+    (an injected asteroid's frame plus two unrelated peaks, 2.96
+    deg/day, 3370"/day^2 -- within the bound at that rate) scored 31.6
+    and took the asteroid's frame, losing its 3-frame detection (29.6).
+    → kept curved tracks are accepted after all regular tracks, so they
+    can't take their frames (fixed on that run; the v014 NEO still found
+    at 77.1). Validation pending: runs where the rule fired get rerun
+    with the fix after M4l.
   - Open from M4: per-frame tail calibration; star-coincidence vetting in
     the plane; bright fast movers (linker curvature, above);
     the global thresholds rest on 15 ecliptic visits -- recheck the guard

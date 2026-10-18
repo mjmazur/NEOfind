@@ -390,3 +390,24 @@ def test_confusion_fraction_flags_crowded_fields():
     f_crowded = _confusion_frac(crowded, covered, cfg.static_source_z)
     assert 0.02 < f_sparse < 0.04 < cfg.crowded_frac < f_crowded
     assert _confusion_frac(crowded, np.zeros_like(covered), 3.0) == 0.0
+
+
+def test_strong_curved_short_tracks_are_kept():
+    from neodetect.detector import DetectorConfig, _strong_curved
+    from neodetect.trackfit import Track, TrackScore
+
+    cfg = DetectorConfig()
+    scale = 2.75
+    speed = 1.0 * 3600 / scale  # 1 deg/day in px/day; bound 500"/day^2 = 182 px/day^2
+    used = np.array([True, True, True, False])
+
+    def ts(z, ax):
+        den = np.full(4, 1.0 / 100.0)  # flux error 10
+        num = np.array(z, float) * 10.0 * den
+        return TrackScore(track=Track(0.0, 0.0, speed, 0.0, 0.0, ax=ax), score=0.0, score_all=0.0,
+                          used=used, covered=np.ones(4, bool), num=num, den=den)
+
+    assert _strong_curved(ts([44, 42, 44, 0], 170.0), cfg, scale)
+    assert not _strong_curved(ts([44, 42, 44, 0], 400.0), cfg, scale)  # beyond the bound
+    assert not _strong_curved(ts([44, 6, 44, 0], 170.0), cfg, scale)  # a weak frame
+    assert not _strong_curved(ts([60, 12, 60, 0], 170.0), cfg, scale)  # inconsistent fluxes

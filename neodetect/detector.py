@@ -133,6 +133,15 @@ class DetectorConfig:
     # 1.06 deg/day mover on 3 frames failed consistency on a 4th frame the
     # straight line reached; no change on scrambled copies).
     straight_refit_fixed_frames: bool = True
+    # ... unless every straight refit fails consistency and the curved fit
+    # is strong and physical: every used frame z >= link_curve_min_z,
+    # curvature within the linker's bound (accel_per_rate2 x rate^2), and
+    # consistent fluxes. NEOs a few tenths of an AU away curve by several
+    # arcsec over three frames from WISE's orbital parallax (a W1 13.7
+    # 1.02 deg/day mover at 0.29 AU: 4" off a straight line, z 42-44 on 3
+    # frames, curved score 77, straight p = 0, so it was dropped).
+    keep_strong_curved: bool = True
+
 
     # Repeat the cosmic-ray tests with the static sky subtracted (``register``):
     # a hit on a star is as broad as the star in the first pass.
@@ -274,6 +283,16 @@ def _path_extent(track: Track, times) -> float:
     return float(np.max(np.hypot(x[:, None] - x[None], y[:, None] - y[None])))
 
 
+def _strong_curved(r: TrackScore, cfg: DetectorConfig, scale_arcsec: float) -> bool:
+    """A curved short track worth keeping (``DetectorConfig.keep_strong_curved``)."""
+    u = r.used
+    z = r.num[u] / np.sqrt(np.maximum(r.den[u], 1e-30))
+    accel = math.hypot(r.track.ax, r.track.ay)
+    return bool(u.any() and np.all(z >= cfg.link_curve_min_z)
+                and accel <= _curve_bound_px(cfg, r.track.speed, scale_arcsec)
+                and r.consistency_p(cfg.frac_tol) >= cfg.min_consistency_p)
+
+
 def _curve_bound_px(cfg: DetectorConfig, speed_px_day: float, scale_arcsec: float) -> float:
     """Curvature (px/day^2) the linker allows for: the close-object term of
     the bound only (``accel_per_rate2`` x rate^2), which matters above
@@ -413,6 +432,8 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
     n_star_noise = 0
     n_single_frame = 0
     ref_err = _blank_sky_flux_err(pre)
+    n_kept_curved = 0
+    kept_curved = set()
     for tr in chosen:
         r = evaluator.refine(tr, accel_max=_accel_bound_px(cfg, tr.speed, scale))
         if r is not None and r.n_used < cfg.accel_min_frames and (r.track.ax or r.track.ay):
@@ -421,6 +442,7 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
             # reach frames the object never visits, whose zero flux then fails
             # the consistency test (re-selection can also find a better set).
             # Keep the better, consistent one first.
+            curved = r
             s0 = _straight(r.track, times[r.used])
             tries = [evaluator.refine(s0, accel_max=0.0)]
             if cfg.straight_refit_fixed_frames:
@@ -428,6 +450,12 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
             fits = [f for f in tries if f is not None]
             r = max(fits, key=lambda f: (f.consistency_p(cfg.frac_tol) >= cfg.min_consistency_p,
                                          f.score)) if fits else None
+            if (cfg.keep_strong_curved
+                    and (r is None or r.consistency_p(cfg.frac_tol) < cfg.min_consistency_p)
+                    and _strong_curved(curved, cfg, scale)):
+                r = curved
+                n_kept_curved += 1
+                kept_curved.add(id(r))
         if r is None or r.score < cfg.report_threshold:
             continue
         if _path_extent(r.track, times) < min_path or r.n_used < cfg.min_frames:
@@ -442,7 +470,11 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
             n_single_frame += 1
             continue
         refined.append(r)
-    refined.sort(key=lambda r: -r.score)
+    # Curved short tracks kept by keep_strong_curved come last, so they
+    # can't take frames from a regular track (on real_v3 v001 one, made of
+    # an injected asteroid's frame and two unrelated peaks, took that
+    # frame and the asteroid's own 3-frame track was lost).
+    refined.sort(key=lambda r: (id(r) in kept_curved, -r.score))
     final: List[TrackScore] = []
     for r in refined:
         if any(same_track(f.track, r.track, times[r.used]) for f in final):
@@ -464,6 +496,7 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
 
     stats.update(n_seeds=len(seeds), n_refined=len(chosen), n_inconsistent=n_inconsistent,
                  n_star_noise=n_star_noise, n_single_frame=n_single_frame,
+                 n_kept_curved=n_kept_curved,
                  flux_err_ref=ref_err.tolist(),
                  timing=timing,
                  max_score=max((r.score for r in refined), default=None))
