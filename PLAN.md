@@ -463,6 +463,13 @@ sweep.py, tests/
     false-track frames -- a per-frame tail calibration would help there.
     The bulge (null levels to 15.7, 26 min per run at the refine cap) is
     effectively unsearchable at WISE resolution.
+  - Suspected unknown asteroids (`review.py`, `neodetect review`):
+    detections get a status (known / near-known / suspect / unchecked)
+    against `known.json` (or SkyBoT, `--skybot`, any station); per suspect
+    a north-up cutout sheet (frames and frames minus the others' median);
+    the user's verdicts (confirm / reject + note) go to `review.json`,
+    matched by position so they survive reruns; confirmed ones export as
+    ADES (trkSub).
   - Open from M4: per-frame tail calibration; star-coincidence vetting in
     the plane; bright fast movers (linker curvature, above);
     the global thresholds rest on 15 ecliptic visits -- recheck the guard

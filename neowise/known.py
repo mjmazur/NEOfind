@@ -34,11 +34,13 @@ SKYBOT = "https://ssp.imcce.fr/webservices/skybot/api/conesearch.php"
 V_MINUS_W = {1: 1.8, 2: 1.9}  # sun V-W1 ~1.6, asteroids a little redder
 
 
-def skybot_cone(mjd_utc: float, ra: float, dec: float, radius_deg: float) -> List[dict]:
-    """Objects within ``radius_deg`` at the epoch, geocentric."""
+def skybot_cone(mjd_utc: float, ra: float, dec: float, radius_deg: float,
+                loc: str = "500") -> List[dict]:
+    """Objects within ``radius_deg`` at the epoch, seen from the MPC
+    observatory ``loc`` (default 500, the geocentre)."""
     q = urllib.parse.urlencode({"-ep": f"{mjd_utc + 2400000.5:.7f}", "-ra": f"{ra:.6f}",
                                 "-dec": f"{dec:.6f}", "-rd": f"{radius_deg:.4f}",
-                                "-mime": "text", "-output": "all", "-loc": "500",
+                                "-mime": "text", "-output": "all", "-loc": loc,
                                 "-objFilter": "111"})
     text = http_get(f"{SKYBOT}?{q}", timeout=180.0).decode("utf-8", "replace")
     return parse_skybot(text)
@@ -105,14 +107,17 @@ def _fit_motion(mjd, ra, dec):
 
 
 def known_objects(seq, center, radius_deg: float, band: int = 1, max_v: float = 99.0,
-                  log=None) -> dict:
+                  log=None, loc: str = "500", v_minus: Optional[float] = None,
+                  source: str = "SkyBoT (IMCCE), shifted to the WISE spacecraft") -> dict:
     """Known objects on the frames of ``seq`` (a ``neodetect.io.Sequence``),
-    in truth.json format."""
+    in truth.json format. Positions are shifted by each frame's
+    ``ERTH2SC[XYZ]`` if present (WISE); a ground station passes its MPC
+    code as ``loc`` and its band's V-minus colour as ``v_minus``."""
     log = log or (lambda *a: None)
-    vw = V_MINUS_W.get(band, 1.8)
+    vw = V_MINUS_W.get(band, 1.8) if v_minus is None else v_minus
     per_obj: Dict[str, dict] = {}
     with ThreadPoolExecutor(4) as ex:  # SkyBoT takes seconds per query
-        results = list(ex.map(lambda fr: skybot_cone(fr.mjd, center[0], center[1], radius_deg),
+        results = list(ex.map(lambda fr: skybot_cone(fr.mjd, center[0], center[1], radius_deg, loc),
                               seq.frames))
     for k, (fr, rows) in enumerate(zip(seq.frames, results)):
         h = fr.header
@@ -160,8 +165,8 @@ def known_objects(seq, center, radius_deg: float, band: int = 1, max_v: float = 
             "n_frames_in_frame": sum(p["in_frame"] for p in frames), "frames": frames,
         })
     asteroids.sort(key=lambda a: a["mag"] if math.isfinite(a["mag"]) else 99.0)
-    return {"source": "SkyBoT (IMCCE), shifted to the WISE spacecraft",
-            "magnitude": f"predicted W{band} = V - {vw}", "asteroids": asteroids}
+    mag = f"predicted W{band} = V - {vw}" if v_minus is None else f"predicted V - {vw}"
+    return {"source": source, "magnitude": mag, "asteroids": asteroids}
 
 
 def write_known(seq, out_dir, center, radius_deg: float, band: int = 1, max_v: float = 99.0,

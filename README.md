@@ -87,6 +87,8 @@ python -m neodetect detect frame_*-int.fits.fz         # any FITS frames with WC
 python -m neodetect detect DIR --region 150.1 12.3 0.5 # search one 0.5 deg square
 python -m neodetect detect DIR --ades obs.psv --gifs cutouts/  # MPC report + vetting GIFs
 python -m neodetect detect pngs/                       # PNG/TIFF/JPEG + times.csv (no WCS)
+python -m neodetect review DIR                         # inspect + confirm suspected unknowns
+python -m neodetect review DIR --ades new.psv          # ... confirmed ones as ADES
 python -m neodetect validate sims/<null-run>           # noise whitening self-check
 python sweep.py -o sims/sweeps/wise_v1 --runs 24 --nulls 24
 python -m neodetect evaluate sims/sweeps/wise_v1       # completeness / false alarms
@@ -261,6 +263,39 @@ The submitter/observer names are placeholders. Check the WISE `mode` and
 `astCat` values against the MPC's documentation before a real submission.
 `--gifs DIR` writes an animated cutout per detection: registered image and
 static-sky residual with the predicted position marked.
+
+**Suspected unknown asteroids** (`review.py`). Each detection that passes
+its threshold gets a status:
+- `known`: it matches a catalogued object in `known.json` (written by
+  `neowise fetch` from SkyBoT; truth.json for simulations) to within 2 px.
+- `near-known`: no match, but a catalogued object at a similar rate (within
+  30%) lies within 60", or 3× its ephemeris uncertainty if that's larger.
+  It's probably that object with a poor orbit; worth a look.
+- `suspect`: nothing catalogued nearby, a suspected unknown asteroid.
+- `unchecked`: there's no catalogue to check against.
+
+`detect` lists the suspects to review. `neodetect review DIR` then
+classifies the detections again (`--skybot` first rebuilds `known.json`
+from SkyBoT: at C51 via the spacecraft offsets for WISE, else at
+`--station` or the headers' `MPCCODE`; raster input needs `ra_deg`,
+`dec_deg` and `pixel_scale_arcsec` in `sequence.json`). It writes a cutout
+sheet per suspect to `DIR/review/` (`index.html` shows them all):
+- upper row: each frame around the track, resampled north up, east left,
+  so the stars shift between frames and the mover stays at the crosshair;
+- lower row: the same with the median of the other frames subtracted,
+  which removes the stars;
+- an orange border marks frames the score didn't use, dark blue marks
+  masked or off-frame pixels.
+
+It then asks for a verdict on each unreviewed suspect: `c` confirm, `r`
+reject, `s` skip, `q` quit, optionally followed by a note. Without a
+terminal, use `--confirm N ...` / `--reject N ...` with `--note`. Verdicts
+go to `DIR/review.json` with the track's positions. They're matched to
+detections by position (median separation < 2 px), not by index, so they
+carry over when the visit is searched again; `detect` shows them in its
+listing. `--ades FILE` writes the confirmed detections as ADES (trkSub
+only, no designation). Before submitting to the MPC, note that a new
+designation needs observations on two or more nights.
 
 Output per detection: score, frames used/covered, RA/Dec and rate/PA at
 `t_ref`, mean flux and magnitude, and per frame the MJD, RA/Dec, native

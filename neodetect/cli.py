@@ -1,12 +1,15 @@
-"""Command-line interface: ``python -m neodetect {detect,evaluate,validate}``.
+"""Command-line interface: ``python -m neodetect {detect,evaluate,review,validate}``.
 
     python -m neodetect detect data/neowise/<visit> --ades obs.psv --gifs cutouts/
+    python -m neodetect review data/neowise/<visit>     # confirm suspected unknowns
 """
 
 import argparse
 import json
 import sys
 from pathlib import Path
+
+import numpy as np
 
 from .detector import DetectorConfig, detect
 
@@ -69,26 +72,42 @@ def _config(args) -> DetectorConfig:
     return DetectorConfig(**kw)
 
 
-def _print_detections(doc):
+def _print_detections(doc, rows=None):
     print(f"{'#':>3} {'score':>6} {'det':>3} {'used':>4} {'RA (deg)':>10} {'Dec (deg)':>10} "
-          f"{'deg/day':>8} {'PA':>6} {'mag':>6}  known")
-    for i, d in enumerate(doc["detections"]):
+          f"{'deg/day':>8} {'PA':>6} {'mag':>6}  status")
+    for i in (range(len(doc["detections"])) if rows is None else rows):
+        d = doc["detections"][i]
         mag = f"{d['mag']:6.2f}" if d["mag"] is not None else "     -"
         print(f"{i:3d} {d['score']:6.1f} {'yes' if d['detected'] else ' no':>3} "
               f"{d['n_frames_used']:2d}/{d['n_frames_covered']:<2d}{d['ra_deg']:10.5f} "
               f"{d['dec_deg']:+10.5f} {d['rate_deg_day']:8.3f} {d['pa_deg']:6.1f} {mag}  "
-              f"{d.get('known') or ''}")
+              f"{_status_text(d)}")
 
 
-def _label_known(doc, known, scale_arcsec):
-    """Name the known object each detection matches, if any."""
-    from .evaluate import match_detection
-    for d in doc["detections"]:
-        for a in known["asteroids"]:
-            if match_detection(d, a, scale_arcsec):
-                d["known"] = a.get("name", a["id"])
-                d["known_id"] = a["id"]
-                break
+def _status_text(d) -> str:
+    known = d.get("known")
+    if not d["detected"]:
+        return "" if known is None else str(known)
+    s = d.get("status", "")
+    if known is not None:
+        s += f" {known}"
+    elif d.get("near_known"):
+        s += f" ({d['near_known']['name']} {d['near_known']['sep_arcsec']:.0f}\")"
+    if d.get("review"):
+        s += f" [{d['review']['verdict']}]"
+    return s
+
+
+def _print_suspects(doc, where) -> None:
+    from .review import REVIEWABLE
+    rows = [i for i, d in enumerate(doc["detections"])
+            if d["detected"] and d.get("status") in REVIEWABLE and not d.get("review")]
+    if rows:
+        kind = "suspected unknown" if any(doc["detections"][i]["status"] != "unchecked"
+                                          for i in rows) else "unchecked"
+        print(f"{len(rows)} {kind} detection(s) to review: "
+              + ", ".join(f"#{i}" for i in rows)
+              + f" -- run `python -m neodetect review {where}`")
 
 
 def _print_known(doc, known):
@@ -134,13 +153,15 @@ def cmd_detect(args) -> int:
         doc["truth_eval"] = truth_eval(seq, result)
     elif seq.known:
         doc["known_eval"] = truth_eval(seq, result, seq.known)
-        _label_known(doc, seq.known, result.reg.pixel_scale_arcsec)
     if args.output:
         out = Path(args.output)
     elif seq.source:
         out = Path(seq.source) / RESULT_NAME
     else:
         out = Path(RESULT_NAME)
+    from . import review
+    review.classify(doc, seq.known or seq.truth)
+    review.attach_verdicts(doc, review.load_verdicts(out.parent))
     out.write_text(json.dumps(doc, indent=1))
     _print_detections(doc)
     if seq.truth:
@@ -149,6 +170,7 @@ def cmd_detect(args) -> int:
     if "known_eval" in doc:
         _print_known(doc, seq.known)
     print(f"wrote {out}")
+    _print_suspects(doc, out if out.name != RESULT_NAME else out.parent)
     if args.ades:
         from .report import ades_rows, write_ades_psv
         rows = ades_rows(doc, [f.header for f in seq.frames], station=args.station)
@@ -236,6 +258,137 @@ def cmd_validate(args) -> int:
     return 0
 
 
+def _review_frames(doc, visit_dir):
+    """The frames a detections file was made from, in its frame order."""
+    from .io import load_sequence
+    paths = [f["path"] for f in doc.get("frames", [])]
+    if paths and all(Path(q).exists() for q in paths):
+        seq = load_sequence(paths)
+    else:  # moved since, or an `evaluate` result: the visit directory's images
+        seq = load_sequence(str(visit_dir))
+    mjd = [f["mjd"] for f in doc["frames"]] if "frames" in doc else \
+        [f["mjd"] for f in doc["detections"][0]["frames"]] if doc["detections"] else []
+    if len(seq.frames) != len(mjd) or any(abs(a.mjd - b) > 1e-6 for a, b in zip(seq.frames, mjd)):
+        raise SystemExit(f"the images in {visit_dir} don't match the detections file's frames")
+    return seq
+
+
+def _skybot_catalog(seq, visit_dir, station, log):
+    """known.json for the visit from SkyBoT, at its station (C51 for WISE,
+    via the spacecraft offsets)."""
+    from neowise.known import write_known
+    fr = seq.frames[0]
+    wise = str(fr.header.get("TELESCOP", "")).strip().upper() == "WISE"
+    seq_json = Path(visit_dir) / "sequence.json"
+    if fr.path.lower().endswith((".png", ".tif", ".tiff", ".jpg", ".jpeg")):
+        meta = json.loads(seq_json.read_text()) if seq_json.exists() else {}
+        if "ra_deg" not in meta or "pixel_scale_arcsec" not in meta:
+            raise SystemExit("--skybot needs the field's pointing and pixel scale: ra_deg, dec_deg "
+                             "and pixel_scale_arcsec in sequence.json")
+    loc = "500" if wise else (station or str(fr.header.get("MPCCODE", "") or ""))
+    if not loc:
+        raise SystemExit("--skybot needs the observatory: --station CODE (or MPCCODE in the headers)")
+    ny, nx = fr.shape
+    ra, dec = fr.wcs.all_pix2world([0, nx - 1, 0, nx - 1, (nx - 1) / 2], [0, 0, ny - 1, ny - 1, (ny - 1) / 2], 0)
+    c = (float(ra[4]), float(dec[4]))
+    cosd = np.cos(np.radians(c[1]))
+    radius = float(np.max(np.hypot(((ra[:4] - c[0] + 180) % 360 - 180) * cosd, dec[:4] - c[1]))) + 0.05
+    log(f"querying SkyBoT ({'C51 via 500 + spacecraft offset' if wise else loc}) per frame, "
+        f"{radius:.2f} deg around {c[0]:.4f} {c[1]:+.4f}")
+    band = int(str(fr.band or "1").upper().lstrip("W") or 1) if wise else 1
+    kw = {} if wise else {"loc": loc, "v_minus": 0.0, "source": f"SkyBoT (IMCCE), station {loc}"}
+    return json.loads(write_known(seq, visit_dir, c, radius, band=band, log=log, **kw).read_text())
+
+
+def cmd_review(args) -> int:
+    from . import review
+
+    target = Path(args.target)
+    det_path = target / args.name if target.is_dir() else target
+    visit_dir = det_path.parent
+    doc = json.loads(det_path.read_text())
+    log = lambda m: print(m, file=sys.stderr)
+    catalog = None
+    for name in ("known.json", "truth.json"):
+        if (visit_dir / name).exists():
+            catalog = json.loads((visit_dir / name).read_text())
+            break
+    seq = None
+    if args.skybot:
+        seq = _review_frames(doc, visit_dir)
+        catalog = _skybot_catalog(seq, visit_dir, args.station, log)
+    review.classify(doc, catalog)
+    verdicts = review.load_verdicts(visit_dir)
+    review.attach_verdicts(doc, verdicts)
+
+    dets = doc["detections"]
+    wanted = review.REVIEWABLE + (("known",) if args.all else ())
+    rows = [i for i, d in enumerate(dets) if d["detected"] and d.get("status") in wanted]
+    changed = False
+    for verdict, idx in (("confirmed", args.confirm), ("rejected", args.reject)):
+        for i in idx or []:
+            if not (0 <= i < len(dets)) or not dets[i]["detected"]:
+                raise SystemExit(f"#{i} is not a detection in {det_path}")
+            review.set_verdict(verdicts, doc, i, verdict, args.note or "")
+            changed = True
+
+    sheet_dir = visit_dir / review.SHEET_DIR
+    if rows and not args.no_sheets:
+        seq = seq or _review_frames(doc, visit_dir)
+        for i in rows:
+            review.write_sheet(seq.frames, doc, i, sheet_dir / f"det{i:03d}.png")
+
+    interactive = args.interactive if args.interactive is not None else (
+        sys.stdin.isatty() and not (args.confirm or args.reject or args.list))
+    if interactive:
+        todo = [i for i in rows if not dets[i].get("review")]
+        print(f"{len(todo)} detection(s) to review ({len(rows) - len(todo)} already have a verdict); "
+              "c = confirm, r = reject, s = skip, q = quit; add a note after the letter")
+        for i in todo:
+            d = dets[i]
+            print()
+            _print_detections(doc, [i])
+            if not args.no_sheets:
+                print(f"    sheet: {sheet_dir / f'det{i:03d}.png'}")
+            try:
+                ans = input(f"#{i} [c/r/s/q]? ").strip()
+            except EOFError:
+                break
+            key, note = (ans[:1].lower(), ans[1:].strip()) if ans else ("s", "")
+            if key == "q":
+                break
+            if key in "cr" and key:
+                review.set_verdict(verdicts, doc, i, "confirmed" if key == "c" else "rejected",
+                                   note or args.note or "")
+                changed = True
+
+    if changed:
+        print(f"wrote {review.save_verdicts(visit_dir, verdicts)}")
+    det_path.write_text(json.dumps(doc, indent=1))
+    if rows and not args.no_sheets:
+        page = review.write_index(doc, rows, sheet_dir, f"{visit_dir}: detections to review")
+        print(f"cutout sheets: {sheet_dir}/det*.png (all on {page})")
+    print()
+    _print_detections(doc, rows)
+    if not rows:
+        print("nothing to review: every detection matches a known object" if catalog
+              else "no detections")
+    elif catalog is None:
+        print("no known.json: statuses are 'unchecked' (--skybot checks SkyBoT)")
+    confirmed = [i for i, d in enumerate(dets) if d["detected"]
+                 and (d.get("review") or {}).get("verdict") == "confirmed"]
+    if args.ades:
+        from .report import ades_rows, write_ades_psv
+        seq = seq or _review_frames(doc, visit_dir)
+        sub = dict(doc, detections=[dict(d) if i in confirmed else dict(d, detected=False)
+                                    for i, d in enumerate(dets)])
+        rows_ = ades_rows(sub, [f.header for f in seq.frames], station=args.station)
+        stn = rows_[0]["stn"] if rows_ else (args.station or "XXX")
+        path = write_ades_psv(rows_, args.ades, observatory=stn)
+        print(f"wrote {path}: {len(rows_)} observations of {len(confirmed)} confirmed detection(s)")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="neodetect",
                                 description="Moving-object (asteroid) detector for image sequences.")
@@ -276,6 +429,28 @@ def build_parser() -> argparse.ArgumentParser:
                    help="false alarms per sequence for threshold calibration (default: 0.05)")
     _add_detector_args(e)
     e.set_defaults(func=cmd_evaluate)
+
+    r = sub.add_parser("review", help="inspect and confirm suspected unknown asteroids")
+    r.add_argument("target", help="a visit directory (its detections file) or a detections JSON")
+    r.add_argument("--name", default=RESULT_NAME, help=f"detections file in the directory "
+                                                       f"(default: {RESULT_NAME})")
+    r.add_argument("--skybot", action="store_true",
+                   help="(re)build known.json from SkyBoT before classifying (needs a real WCS "
+                        "and the observatory: C51 for WISE, else --station or MPCCODE)")
+    r.add_argument("--station", help="MPC observatory code (ground data; also for --ades)")
+    r.add_argument("--all", action="store_true", help="also list detections of known objects")
+    r.add_argument("--confirm", type=int, nargs="+", metavar="N", help="confirm detections #N")
+    r.add_argument("--reject", type=int, nargs="+", metavar="N", help="reject detections #N")
+    r.add_argument("--note", help="note stored with the verdicts")
+    r.add_argument("--list", action="store_true", help="only list, don't prompt")
+    r.add_argument("--interactive", action=argparse.BooleanOptionalAction, default=None,
+                   help="prompt for a verdict on each unreviewed detection (default: when run "
+                        "in a terminal without --confirm/--reject/--list)")
+    r.add_argument("--no-sheets", action="store_true", help="don't write cutout sheets")
+    r.add_argument("--ades", metavar="FILE",
+                   help="write the confirmed detections as ADES PSV (trkSub; no designation "
+                        "unless matched to a known object)")
+    r.set_defaults(func=cmd_review)
 
     v = sub.add_parser("validate", help="check noise whitening on an asteroid-free sequence")
     v.add_argument("inputs", nargs="+")
