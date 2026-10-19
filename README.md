@@ -208,12 +208,14 @@ Pipeline:
    than the track's own photon noise explains; bright asteroids like
    Oceana are 2.6× from their own noise and stay); tracks whose score rests
    on one frame are rejected (without it < 0.6 of the score and < 8 left;
-   real asteroids keep 0.66–0.97); extended tracks are rejected (the
+   real asteroids keep 0.66–0.97); tracks with ≥ 75% of their frames on a
+   static source (the frames' median sky > 3× the single-frame noise
+   within 1 px) are rejected -- in crowded fields slow false tracks thread
+   faint, partly variable stars; extended tracks are rejected (the
    frame-combined flux fitted with a Gaussian twice the PSF width, over
    the PSF-fit flux, above 2.2; a point source gives ~1.7, 1012
-   injected and known asteroid tracks ≤ 2.11) -- bright-star ghosts and
-   halos drift slowly through dense fields and set the top false tracks
-   there; per-frame
+   injected and known asteroid tracks ≤ 2.11) -- bright-star ghosts and halos drift slowly
+   through dense fields and set the top false tracks there; per-frame
    fluxes must be consistent with one source (χ² p ≥ 1e-3, allowing 35%
    variability); a frame already claimed by a stronger track is released.
    Detection thresholds depend on how many frames a track uses (short
@@ -236,7 +238,7 @@ Pipeline:
 `detect` runs the detector on one time-scrambled copy of the visit
 (`--null-scrambles N`, default 1 on real WISE frames, 0 = off). Its *null
 level* (5th-highest candidate score) sets the visit's thresholds,
-level × 1.81 / 1.62 / 1.66 for 3 / 4 / ≥ 5-frame tracks (`--null-ratio`),
+level × 1.80 / 1.38 / 1.25 for 3 / 4 / ≥ 5-frame tracks (`--null-ratio`),
 and the copy gives an **artifact veto**: a candidate within 60″ (at the
 reference time) of a scrambled-copy candidate scoring ≥ 1.2× the null
 level is rejected, as something that recurs whatever the frame order isn't
@@ -250,7 +252,9 @@ a time (calibrated on the other 29):
 
 | scheme | false per null copy | W1 15–15.5 / 15.5–16 / 16–16.5, off plane | in plane |
 |---|---|---|---|
-| per-visit, 1 copy (default) | 0.067 | 0.92 / 0.65 / 0.11 | 0.61 / 0.15 / 0.00 |
+| per-visit, 1 copy, static-source + extendedness vetting (default) | 0.044 | 0.92 / 0.78 / 0.41 | 0.76 / 0.27 / 0.07 |
+| per-visit, 1 copy, static-source vetting only | 0.067 | 0.95 / 0.77 / 0.31 | 0.67 / 0.24 / 0.02 |
+| per-visit, 1 copy, neither | 0.067 | 0.92 / 0.65 / 0.11 | 0.61 / 0.15 / 0.00 |
 | per-visit, 2 copies | 0.078 | 0.92 / 0.63 / 0.10 | 0.59 / 0.12 / 0.00 |
 | global thresholds | 0.122 | 0.80 / 0.35 / 0.00 | 0.57 / 0.03 / 0.00 |
 | guard (global, raised for noisy visits) | 0.011 | 0.80 / 0.35 / 0.00 | 0.53 / 0.03 / 0.00 |
@@ -261,14 +265,14 @@ cost completeness everywhere else. (On the 15 ecliptic visits of
 nothing there -- because those visits are alike.) In the bulge (null
 levels up to 15.7) the thresholds reach 20–26 and practically nothing is
 detected. Without scrambled copies (`--null-scrambles 0`) real WISE uses
-fixed thresholds 10.25 / 9.25 / 11.75 calibrated on the 17 quiet visits:
+fixed thresholds 9.75 / 9.25 / 9.25 calibrated on the 22 quiet visits:
 valid away from the plane only. `--null-mode guard` keeps those fixed
 thresholds and raises them only above the null level `GUARD_LEVEL` (8.8).
 
 **Crowded fields.** After registration the detector measures the fraction
-of covered sky within 1 px of a static source (the frames' median sky
-above 3× the single-frame noise). From `crowded_frac` = 0.45 on, the
-visit is flagged `crowded` in the stats and the listing. Over 30 real NEOWISE visits the
+of covered sky within 1 px of a static source (z > 3, the static-source
+vetting's map). From `crowded_frac` = 0.45 on, the visit is flagged
+`crowded` in the stats and the listing. Over 30 real NEOWISE visits the
 fraction was ≤ 0.34 wherever injected W1 14.5–15.5 asteroids were found
 reliably, and ≥ 0.54 in the five bulge and plane fields, where null levels
 reached 9.4–14.8 and completeness collapsed. `--skip-crowded` stops there

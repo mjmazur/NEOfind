@@ -168,11 +168,11 @@ def default_null_scrambles(frame: "Frame") -> int:
 
 
 # Fixed detection thresholds (3 / 4 / >= 5 frames) for real NEOWISE W1 when
-# no scrambled copy is run (--null-scrambles 0): calibrated on the 17 quiet
-# visits (median one-copy null level <= 7.5) of sims/real_v1 + real_v3, so
-# valid away from the Galactic plane only; plane and bulge fields need the
-# per-visit thresholds (nullcal), which are the default.
-REAL_WISE_THRESHOLDS = (10.25, 9.25, 11.75)
+# no scrambled copy is run (--null-scrambles 0): calibrated on the 22 quiet
+# visits (median one-copy null level <= 7.5) of sims/real_v1 + real_v3 with
+# static-source and extendedness vetting, so valid away from the Galactic plane only; plane
+# and bulge fields need the per-visit thresholds (nullcal), the default.
+REAL_WISE_THRESHOLDS = (9.75, 9.25, 9.25)
 
 
 # The simulator's ``ground`` preset (sims/sweeps/ground_v1: 24 null runs,

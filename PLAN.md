@@ -463,6 +463,29 @@ sweep.py, tests/
     false-track frames -- a per-frame tail calibration would help there.
     The bulge (null levels to 15.7, 26 min per run at the refine cap) is
     effectively unsearchable at WISE resolution.
+  - Static-source vetting (`static_source_frac` 0.75, `static_source_z`
+    3): reject tracks with ≥ 75% of their used frames within 1 px of a
+    static source (the frames' median sky > 3× the single-frame noise).
+    Tested offline on the m4h detections of all 30 visits (rules: all /
+    ≥ 75% of frames, z > 3 / 5), ratios recalibrated leave-one-visit-out:
+    ≥ 75% at z > 3 keeps the held-out false rate at 0.067 per copy and
+    raises completeness at W1 15 / 15.5 / 16 from 0.92 / 0.65 / 0.11 to
+    0.95 / 0.77 / 0.31 off the plane and 0.61 / 0.15 / 0.00 to 0.67 / 0.24
+    / 0.02 in it; "all frames" removed too little to lower thresholds.
+    Cost: 2 of 586 injected asteroids (W1 13.6–13.7 in Puppis and Carina,
+    where most positions lie on some star); Oceana, Lachesis, (2882) and
+    simulated runs unchanged. NULL_RATIO 1.62 / 1.35 / 1.46; fixed
+    real-WISE thresholds 10.25 / 9.75 / 10.25 (18 quiet visits).
+    Confirmed in the detector (M4l): held out over 30 visits 0.067 false
+    per copy with the same six events as offline and the same
+    completeness, once the curved-track rule's kept tracks are gated at
+    z >= 9 (two of its tracks were extra false events; gate pending);
+    real_v1 W1 15.5 / 16 33 / 3 -> 40 / 10 of 68 / 69 found, real_v3
+    gains as offline, simulated sweeps identical to M4h. Cost: one slow
+    W1 14.9 asteroid in a field at b = -23 (7 of 9 frames on faint stars,
+    static z 3.3-8.9). With extendedness vetting the calibration is
+    NULL_RATIO 1.80 / 1.38 / 1.25, fixed thresholds 9.75 / 9.25 / 9.25
+    (M4m confirming).
   - Crowded-field flag (`crowded_frac` 0.45, `--skip-crowded`): the
     fraction of covered sky within 1 px of a static source (z > 3) is
     <= 0.34 on the 25 visits where injected W1 14.5-15.5 asteroids were
@@ -477,22 +500,6 @@ sweep.py, tests/
     the user's verdicts (confirm / reject + note) go to `review.json`,
     matched by position so they survive reruns; confirmed ones export as
     ADES (trkSub).
-  - Bright fast movers: of injected W1 < 15 movers >= 0.6 deg/day on 3
-    frames, 47 of 58 found (on 4-6 frames 94 of 97). Five with truth SNR
-    25-75 had no candidate at all: NEOs a few tenths of an AU away whose
-    paths curve by several arcsec over three frames (WISE orbital
-    parallax); the curved 3-frame fit found them, the straight refit of
-    < 4-frame tracks failed consistency and dropped them. →
-    `keep_strong_curved`: keep the curved fit when every used frame has
-    z >= 7, the curvature is within the linker's bound, and fluxes are
-    consistent. Partial M4l rerun: on real_v3 v001 a kept curved track
-    (an injected asteroid's frame plus two unrelated peaks, 2.96
-    deg/day, 3370"/day^2 -- within the bound at that rate) scored 31.6
-    and took the asteroid's frame, losing its 3-frame detection (29.6).
-    → kept curved tracks are accepted after all regular tracks, so they
-    can't take their frames (fixed on that run; the v014 NEO still found
-    at 77.1). Validation pending: runs where the rule fired get rerun
-    with the fix after M4l.
   - Extendedness vetting (`extended_max` 2.2, `extended_k` 2): partial
     M4l real_v3 showed the top false tracks in a Cassiopeia field (17.0,
     0.014 deg/day, 10 weak frames) on a diffuse blob several PSF widths
@@ -515,8 +522,34 @@ sweep.py, tests/
     thresholds 9.75 / 9.25 / 9.25 (22 quiet visits) -- applied with the
     static-source vetting, still pending. Needs a full rerun to confirm in
     the detector; M4l predates it.
-  - Open from M4: per-frame tail calibration; star-coincidence vetting in
-    the plane; bright fast movers (linker curvature, above);
+  - Per-frame tail calibration: tested offline, not adopted. Per frame
+    of all 30 visits, the 1e-4 upper quantile of the SNR map on star-free
+    sky relative to the visit median: 95th percentile 1.57, 99th 3.0.
+    Deflating frames' weights by that ratio (all frames, > 1.2, > 1.5;
+    1e-4 or 1e-5 quantile; ratio or its square root), rescored from the
+    saved per-frame fluxes (exact for the score) and recalibrated
+    leave-one-visit-out on top of static-source vetting: held-out false
+    0.056-0.089 per copy vs 0.067, completeness at W1 16 0.24-0.26 vs 0.31
+    off the plane. The 6 remaining held-out false events in 90 copies
+    aren't on heavy-tailed frames: robust combination and single-frame
+    dominance already contain them.
+  - Bright fast movers: of injected W1 < 15 movers >= 0.6 deg/day on 3
+    frames, 47 of 58 found (on 4-6 frames 94 of 97). Five with truth SNR
+    25-75 had no candidate at all: NEOs a few tenths of an AU away whose
+    paths curve by several arcsec over three frames (WISE orbital
+    parallax); the curved 3-frame fit found them, the straight refit of
+    < 4-frame tracks failed consistency and dropped them. →
+    `keep_strong_curved`: keep the curved fit when every used frame has
+    z >= 7, the curvature is within the linker's bound, and fluxes are
+    consistent. Partial M4l rerun: on real_v3 v001 a kept curved track
+    (an injected asteroid's frame plus two unrelated peaks, 2.96
+    deg/day, 3370"/day^2 -- within the bound at that rate) scored 31.6
+    and took the asteroid's frame, losing its 3-frame detection (29.6).
+    → kept curved tracks are accepted after all regular tracks, so they
+    can't take their frames (fixed on that run; the v014 NEO still found
+    at 77.1). Validation pending: runs where the rule fired get rerun
+    with the fix after M4l.
+  - Open from M4: bright fast movers (linker curvature, above);
     the global thresholds rest on 15 ecliptic visits -- recheck the guard
     level on new sky (Galactic plane).
 - Real-data limits found in M3, and what became of them:

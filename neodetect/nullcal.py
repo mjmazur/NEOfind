@@ -65,10 +65,11 @@ NULL_RANK = 5
 # Calibrated on real NEOWISE W1 single exposures: 30 visits x 3 scrambled
 # copies (sims/real_v1 along the ecliptic, sims/real_v3 incl. 11 Galactic-
 # plane fields), final M4 detector, held-out copies, <= 0.05 false per visit.
-# Held out one visit at a time (calibrated on the other 29): 0.067 false per
-# copy with the level from one copy. Recalibrate with ``neodetect evaluate``
+# Held out one visit at a time (calibrated on the other 29): 0.044 false per
+# copy with the level from one copy (with static-source and extendedness
+# vetting). Recalibrate with ``neodetect evaluate``
 # (``per_visit.ratios``) after detector changes.
-NULL_RATIO = {"3": 1.81, "4": 1.62, "5+": 1.66}
+NULL_RATIO = {"3": 1.80, "4": 1.38, "5+": 1.25}
 # Guard mode: a visit's thresholds are raised by level / GUARD_LEVEL when
 # its null level (one scrambled copy) exceeds the highest single-copy level
 # of the calibration sample (sims/real_v1, final M4 detector: 8.76 in the

@@ -374,6 +374,24 @@ def test_cupy_backend_matches_reference():  # pragma: no cover
     assert backend.cupy_ok()
 
 
+def test_static_source_vetting():
+    from types import SimpleNamespace
+    from neodetect.detector import DetectorConfig, _on_static_sources
+    from neodetect.trackfit import Track
+
+    cfg = DetectorConfig()
+    times = np.arange(4) * 0.1
+    z = np.zeros((50, 60), np.float32)
+    tr = Track(10.0, 20.0, 100.0, 0.0, 0.0)  # x = 10, 20, 30, 40 at the four frames
+    used = np.ones(4, bool)
+    r = SimpleNamespace(track=tr, used=used)
+    for x in (10, 20, 30):
+        z[20, x + 1] = 8.0  # stars under three of the four positions (1 px off)
+    assert _on_static_sources(r, z, times, cfg)  # 3/4 >= 0.75
+    z[20, 31] = 0.0
+    assert not _on_static_sources(r, z, times, cfg)  # 2/4
+
+
 def test_confusion_fraction_flags_crowded_fields():
     from neodetect.detector import DetectorConfig, _confusion_frac
 

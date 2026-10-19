@@ -79,13 +79,21 @@ class DetectorConfig:
     # >= 9 and none of 680 injected-asteroid detections. 0 = off.
     single_frame_max_frac: float = 0.6
     single_frame_min_rest: float = 8.0
-    # Static-source map: per grid pixel, the frames' median sky over the
-    # single-frame noise; a static source is above static_source_z.
+    # Reject tracks with >= static_source_frac of their used frames on a
+    # static source (the frames' median sky above static_source_z x the
+    # single-frame noise within 1 px): in crowded fields slow false tracks
+    # thread faint, partly variable stars. Held out over 30 real NEOWISE
+    # visits (per-visit thresholds, recalibrated): false rate unchanged
+    # (0.067 per copy), completeness at W1 15.5-16 0.65 -> 0.77 off the
+    # Galactic plane and 0.15 -> 0.24 in it; 2 of 586 injected asteroids
+    # lost (dense plane fields, where most positions lie on some star).
+    # 0 = off.
+    static_source_frac: float = 0.75
     static_source_z: float = 3.0
     # Crowded fields: when >= crowded_frac of the covered sky lies within
-    # 1 px of a static source, the visit is flagged ``crowded`` in the
-    # stats, and with skip_crowded the search is skipped. Over 30 real
-    # NEOWISE visits the fraction was <= 0.34 wherever injected W1
+    # 1 px of a static source (as above), the visit is flagged ``crowded``
+    # in the stats, and with skip_crowded the search is skipped. Over 30
+    # real NEOWISE visits the fraction was <= 0.34 wherever injected W1
     # 14.5-15.5 asteroids were found reliably and >= 0.54 in the five
     # Galactic bulge/plane fields where null levels reached 9.4-14.8 and
     # completeness collapsed. 0 = off.
@@ -153,7 +161,6 @@ class DetectorConfig:
     # 1.02 deg/day mover at 0.29 AU: 4" off a straight line, z 42-44 on 3
     # frames, curved score 77, straight p = 0, so it was dropped).
     keep_strong_curved: bool = True
-
 
     # Repeat the cosmic-ray tests with the static sky subtracted (``register``):
     # a hit on a star is as broad as the star in the first pass.
@@ -300,6 +307,22 @@ def _confusion_frac(static_z: np.ndarray, covered: np.ndarray, z: float) -> floa
     if not covered.any():
         return 0.0
     return float(np.mean(ndimage.maximum_filter(static_z, 3)[covered] > z))
+
+
+def _on_static_sources(r: TrackScore, static_z: np.ndarray, times, cfg) -> bool:
+    """True if >= ``static_source_frac`` of the used frames put the track
+    within 1 px of a static source above ``static_source_z``."""
+    used = np.flatnonzero(r.used)
+    if not used.size:
+        return False
+    xs, ys = r.track.position(times[used])
+    h, w = static_z.shape
+    on = []
+    for x, y in zip(xs, ys):
+        xi, yi = int(round(float(x))), int(round(float(y)))
+        if 1 <= yi < h - 1 and 1 <= xi < w - 1:
+            on.append(static_z[yi - 1:yi + 2, xi - 1:xi + 2].max() > cfg.static_source_z)
+    return bool(on) and float(np.mean(on)) >= cfg.static_source_frac
 
 
 def _single_frame_dominated(r: TrackScore, cfg) -> bool:
@@ -472,9 +495,12 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
     n_star_noise = 0
     n_single_frame = 0
     ref_err = _blank_sky_flux_err(pre)
+    n_static = 0
     n_kept_curved = 0
     kept_curved = set()
     n_extended = 0
+    if not cfg.static_source_frac:
+        static_z = None
     for tr in chosen:
         r = evaluator.refine(tr, accel_max=_accel_bound_px(cfg, tr.speed, scale))
         if r is not None and r.n_used < cfg.accel_min_frames and (r.track.ax or r.track.ay):
@@ -510,6 +536,9 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
         if cfg.single_frame_max_frac and _single_frame_dominated(r, cfg):
             n_single_frame += 1
             continue
+        if static_z is not None and _on_static_sources(r, static_z, times, cfg):
+            n_static += 1
+            continue
         if cfg.extended_max:
             ext = _extendedness(r, pre, times, cfg.extended_k)
             if ext is not None and ext > cfg.extended_max:
@@ -541,7 +570,7 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
         f"({timing['triage_s'] + timing['refine_s']:.1f}s)")
 
     stats.update(n_seeds=len(seeds), n_refined=len(chosen), n_inconsistent=n_inconsistent,
-                 n_star_noise=n_star_noise, n_single_frame=n_single_frame,
+                 n_star_noise=n_star_noise, n_single_frame=n_single_frame, n_static=n_static,
                  n_kept_curved=n_kept_curved, n_extended=n_extended,
                  flux_err_ref=ref_err.tolist(),
                  timing=timing,
