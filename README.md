@@ -237,7 +237,7 @@ Pipeline:
 **Thresholds on real WISE** (`nullcal.py`, `io.default_thresholds`).
 `detect` runs the detector on one time-scrambled copy of the visit
 (`--null-scrambles N`, default 1 on real WISE frames, 0 = off). Its *null
-level* (5th-highest candidate score) sets the visit's thresholds,
+level* (5th-highest candidate score, at least 6.5) sets the visit's thresholds,
 level × 1.80 / 1.38 / 1.25 for 3 / 4 / ≥ 5-frame tracks (`--null-ratio`),
 and the copy gives an **artifact veto**: a candidate within 60″ (at the
 reference time) of a scrambled-copy candidate scoring ≥ 1.2× the null

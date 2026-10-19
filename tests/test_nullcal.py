@@ -81,3 +81,10 @@ def test_artifact_veto_drops_recurring_site_from_calibration():
             {"score": 20.0, "n_frames_used": 6, "ra_deg": 11.0, "dec_deg": 21.0}]
     assert nullcal.apply(dets, nullcal.thresholds(level), sites) == 1
     assert dets[0]["artifact_veto"] and not dets[0]["detected"] and dets[1]["detected"]
+
+
+def test_null_level_has_a_minimum():
+    # A quiet copy with fewer than NULL_RANK candidates (extendedness
+    # vetting removed the rest) must not drag thresholds down to noise.
+    assert nullcal.null_level([[8.0, 6.0, 5.5]]) == nullcal.MIN_LEVEL
+    assert nullcal.null_level([[9.0, 8.5, 8.0, 7.5, 7.2]]) == 7.2

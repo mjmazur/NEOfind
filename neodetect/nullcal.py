@@ -78,6 +78,12 @@ NULL_RATIO = {"3": 1.80, "4": 1.38, "5+": 1.25}
 # where per-visit thresholds gave 0.089.
 GUARD_LEVEL = 8.8
 VETO_RADIUS_ARCSEC = 60.0
+# Lowest null level used: with extendedness vetting a quiet copy can keep
+# fewer than NULL_RANK candidates above the report threshold, and the level
+# fell to that threshold (5.0 on a 9-frame high-latitude visit, M4m: its
+# thresholds dropped to 6.3-6.9 and five noise tracks at 6.5-8.2 passed).
+# 6.5 is the 5th percentile of single-copy levels before that vetting.
+MIN_LEVEL = 6.5
 VETO_MIN_RATIO = 1.2
 
 
@@ -86,14 +92,15 @@ def frame_class(n_used: int) -> str:
 
 
 def null_level(scramble_scores: Seq[Seq[float]], rank: int = NULL_RANK,
-               floor: float = 5.0) -> float:
+               floor: float = 5.0, min_level: float = MIN_LEVEL) -> float:
     """Median over scrambled copies of the ``rank``-th highest candidate
-    score (``floor``, the report threshold, when a copy has fewer)."""
+    score (``floor``, the report threshold, when a copy has fewer), and at
+    least ``min_level``."""
     vals = []
     for scores in scramble_scores:
         s = sorted(scores, reverse=True)
         vals.append(s[rank - 1] if len(s) >= rank else floor)
-    return float(np.median(vals)) if vals else float("nan")
+    return max(float(np.median(vals)), min_level) if vals else float("nan")
 
 
 def thresholds(level: float, ratios: Optional[Dict[str, float]] = None) -> Dict[str, float]:

@@ -523,6 +523,16 @@ sweep.py, tests/
     thresholds 9.75 / 9.25 / 9.25 (22 quiet visits) -- applied with the
     static-source vetting, still pending. Needs a full rerun to confirm in
     the detector; M4l predates it.
+  - Minimum null level (`nullcal.MIN_LEVEL` 6.5): in M4m a quiet 9-frame
+    high-latitude visit (v008) kept fewer than 5 candidates above the
+    report threshold in a scrambled copy once extendedness vetting
+    removed the rest, so its null level fell to that threshold (5.0), its
+    thresholds to 6.3-6.9, and five noise tracks at 6.5-8.2 passed. The
+    offline estimate couldn't show it: it cut only candidates >= 7.5. 6.5
+    is the 5th percentile of single-copy levels before extendedness
+    vetting (M4l; 1 copy in 77 below it, 4 in M4m). With it, M4m on 10
+    finished real_v3 visits: no false tracks in 30 copies (M4l 4), real_v1
+    unchanged (2 in 45). Provisional until a held-out check on all of M4m.
   - Per-frame tail calibration: tested offline, not adopted. Per frame
     of all 30 visits, the 1e-4 upper quantile of the SNR map on star-free
     sky relative to the visit median: 95th percentile 1.57, 99th 3.0.
