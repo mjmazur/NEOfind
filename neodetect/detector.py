@@ -154,13 +154,18 @@ class DetectorConfig:
     # straight line reached; no change on scrambled copies).
     straight_refit_fixed_frames: bool = True
     # ... unless every straight refit fails consistency and the curved fit
-    # is strong and physical: every used frame z >= link_curve_min_z,
+    # is strong and physical: every used frame z >= keep_curved_min_z,
     # curvature within the linker's bound (accel_per_rate2 x rate^2), and
     # consistent fluxes. NEOs a few tenths of an AU away curve by several
     # arcsec over three frames from WISE's orbital parallax (a W1 13.7
     # 1.02 deg/day mover at 0.29 AU: 4" off a straight line, z 42-44 on 3
     # frames, curved score 77, straight p = 0, so it was dropped).
     keep_strong_curved: bool = True
+    # On M4l, kept curved tracks matching injected asteroids had their
+    # weakest frame at z 8.2-43.6, the four in scrambled copies at 7.1-8.3
+    # (fast curved chance alignments of three peaks): z >= 9 keeps 7 of the
+    # 10 recoveries and none of the false tracks.
+    keep_curved_min_z: float = 9.0
 
     # Repeat the cosmic-ray tests with the static sky subtracted (``register``):
     # a hit on a star is as broad as the star in the first pass.
@@ -351,7 +356,7 @@ def _strong_curved(r: TrackScore, cfg: DetectorConfig, scale_arcsec: float) -> b
     u = r.used
     z = r.num[u] / np.sqrt(np.maximum(r.den[u], 1e-30))
     accel = math.hypot(r.track.ax, r.track.ay)
-    return bool(u.any() and np.all(z >= cfg.link_curve_min_z)
+    return bool(u.any() and np.all(z >= cfg.keep_curved_min_z)
                 and accel <= _curve_bound_px(cfg, r.track.speed, scale_arcsec)
                 and r.consistency_p(cfg.frac_tol) >= cfg.min_consistency_p)
 

@@ -429,6 +429,8 @@ def test_strong_curved_short_tracks_are_kept():
     assert not _strong_curved(ts([44, 42, 44, 0], 400.0), cfg, scale)  # beyond the bound
     assert not _strong_curved(ts([44, 6, 44, 0], 170.0), cfg, scale)  # a weak frame
     assert not _strong_curved(ts([60, 12, 60, 0], 170.0), cfg, scale)  # inconsistent fluxes
+    assert not _strong_curved(ts([8.5, 8.5, 8.5, 0], 170.0), cfg, scale)  # below keep_curved_min_z
+    assert _strong_curved(ts([9.5, 9.5, 9.5, 0], 170.0), cfg, scale)
 
 
 def test_extendedness_separates_points_from_blobs():

@@ -190,7 +190,7 @@ Pipeline:
    frames re-selected and on the curved fit's own frames (a straight line
    through a curved path can reach frames the object never visits).
    The curved fit is kept instead when every straight fit fails flux
-   consistency and the curved fit is strong and physical: z ≥ 7 on every
+   consistency and the curved fit is strong and physical: z ≥ 9 on every
    used frame, curvature within 500 × rate² "/day², consistent fluxes.
    NEOs a few tenths of an AU away curve by several arcsec over three
    frames (WISE's orbital parallax): a W1 13.7, 1.02 deg/day mover at

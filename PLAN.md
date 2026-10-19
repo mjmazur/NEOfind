@@ -479,7 +479,8 @@ sweep.py, tests/
     Confirmed in the detector (M4l): held out over 30 visits 0.067 false
     per copy with the same six events as offline and the same
     completeness, once the curved-track rule's kept tracks are gated at
-    z >= 9 (two of its tracks were extra false events; gate pending);
+    z >= 9 (two of its tracks were extra false events; see the bright
+    fast movers entry);
     real_v1 W1 15.5 / 16 33 / 3 -> 40 / 10 of 68 / 69 found, real_v3
     gains as offline, simulated sweeps identical to M4h. Cost: one slow
     W1 14.9 asteroid in a field at b = -23 (7 of 9 frames on faint stars,
@@ -547,8 +548,12 @@ sweep.py, tests/
     and took the asteroid's frame, losing its 3-frame detection (29.6).
     → kept curved tracks are accepted after all regular tracks, so they
     can't take their frames (fixed on that run; the v014 NEO still found
-    at 77.1). Validation pending: runs where the rule fired get rerun
-    with the fix after M4l.
+    at 77.1). M4l (all real sets with injections, pre-fix): 10 kept curved
+    tracks matched injected asteroids missed before (weakest frame z
+    8.2-43.6), 4 were false tracks in scrambled copies (z 7.1-8.3; one,
+    15.4 at 4.6 deg/day, above its copy's threshold) → `keep_curved_min_z`
+    9: keeps 7 recoveries, no false tracks. Kept curved tracks come last,
+    so the gate can be applied to saved results exactly (M4m ran at 7).
   - Open from M4: bright fast movers (linker curvature, above);
     the global thresholds rest on 15 ecliptic visits -- recheck the guard
     level on new sky (Galactic plane).
