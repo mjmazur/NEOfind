@@ -411,3 +411,30 @@ def test_strong_curved_short_tracks_are_kept():
     assert not _strong_curved(ts([44, 42, 44, 0], 400.0), cfg, scale)  # beyond the bound
     assert not _strong_curved(ts([44, 6, 44, 0], 170.0), cfg, scale)  # a weak frame
     assert not _strong_curved(ts([60, 12, 60, 0], 170.0), cfg, scale)  # inconsistent fluxes
+
+
+def test_extendedness_separates_points_from_blobs():
+    from types import SimpleNamespace
+    from neodetect.detector import DetectorConfig, _extendedness
+    from neodetect.trackfit import Track
+
+    rng = np.random.default_rng(7)
+    cfg = DetectorConfig()
+    times = np.arange(4) * 0.1
+    tr = Track(30.0, 40.0, 100.0, 0.0, 0.0)  # x = 30, 40, 50, 60
+    sig = 1.2
+    yy, xx = np.mgrid[0:80, 0:100]
+
+    def pre_with(width):
+        resid = rng.normal(0, 1.0, (4, 80, 100)).astype(np.float32)
+        for k, x in enumerate(tr.position(times)[0]):
+            resid[k] += 400.0 / (2 * np.pi * width ** 2) * np.exp(-((xx - x) ** 2 + (yy - 40.0) ** 2)
+                                                                   / (2 * width ** 2))
+        return SimpleNamespace(resid=resid, weight=np.ones((4, 80, 100), np.float32),
+                               psf_sigma_px=np.full(4, sig))
+
+    r = SimpleNamespace(track=tr, used=np.ones(4, bool))
+    point = _extendedness(r, pre_with(sig), times, cfg.extended_k)
+    blob = _extendedness(r, pre_with(3 * sig), times, cfg.extended_k)
+    assert abs(point - 1.6) < 0.1  # 2k^2 / (1 + k^2)
+    assert blob > 2.8 > cfg.extended_max > point

@@ -208,7 +208,12 @@ Pipeline:
    than the track's own photon noise explains; bright asteroids like
    Oceana are 2.6× from their own noise and stay); tracks whose score rests
    on one frame are rejected (without it < 0.6 of the score and < 8 left;
-   real asteroids keep 0.66–0.97); per-frame
+   real asteroids keep 0.66–0.97); extended tracks are rejected (the
+   frame-combined flux fitted with a Gaussian twice the PSF width, over
+   the PSF-fit flux, above 2.2; a point source gives ~1.7, 1012
+   injected and known asteroid tracks ≤ 2.11) -- bright-star ghosts and
+   halos drift slowly through dense fields and set the top false tracks
+   there; per-frame
    fluxes must be consistent with one source (χ² p ≥ 1e-3, allowing 35%
    variability); a frame already claimed by a stronger track is released.
    Detection thresholds depend on how many frames a track uses (short

@@ -493,6 +493,28 @@ sweep.py, tests/
     can't take their frames (fixed on that run; the v014 NEO still found
     at 77.1). Validation pending: runs where the rule fired get rerun
     with the fix after M4l.
+  - Extendedness vetting (`extended_max` 2.2, `extended_k` 2): partial
+    M4l real_v3 showed the top false tracks in a Cassiopeia field (17.0,
+    0.014 deg/day, 10 weak frames) on a diffuse blob several PSF widths
+    across beside a bright star -- a WISE ghost or halo, which L1b masks
+    don't flag. Per track, the frame-combined flux fitted with a Gaussian
+    2x the PSF sigma over the PSF-fit flux (point source 1.6 for a
+    Gaussian PSF, ~1.7 measured). Offline on M4h detections of 69 real
+    runs: 261 injected/known asteroid tracks <= 2.11 (7.5-10 scores <=
+    1.97), 55% of scrambled-copy tracks >= 9 above 2.2 (42% at 7.5-10).
+    In the detector: the 17.0 ghost gone (copy's top 13.0), v014 (11
+    found incl. the 77.1 NEO), a simulated run and Oceana unchanged.
+    Full measurement (150 real runs incl. real_v2's injected): 1012
+    asteroid tracks <= 2.11 (99% 1.91; 89 at scores 7.5-10 <= 1.97; 17
+    real known objects <= 1.84); 53% of scrambled tracks >= 9 above 2.2.
+    Held out over 30 visits on top of static-source vetting (cuts 2.0 /
+    2.2 / 2.4): 2.2 best -- false 0.067 -> 0.044 per copy, completeness
+    W1 15 / 15.5 / 16 0.95 / 0.77 / 0.31 -> 0.92 / 0.78 / 0.41 off the
+    plane and 0.67 / 0.24 / 0.02 -> 0.76 / 0.27 / 0.07 in it (2.0: 0.078
+    false). With both: NULL_RATIO 1.80 / 1.38 / 1.25, fixed real-WISE
+    thresholds 9.75 / 9.25 / 9.25 (22 quiet visits) -- applied with the
+    static-source vetting, still pending. Needs a full rerun to confirm in
+    the detector; M4l predates it.
   - Open from M4: per-frame tail calibration; star-coincidence vetting in
     the plane; bright fast movers (linker curvature, above);
     the global thresholds rest on 15 ecliptic visits -- recheck the guard

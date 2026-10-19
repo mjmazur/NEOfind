@@ -91,6 +91,18 @@ class DetectorConfig:
     # completeness collapsed. 0 = off.
     crowded_frac: float = 0.45
     skip_crowded: bool = False
+    # Reject extended tracks: the frame-combined flux fitted with a Gaussian
+    # extended_k x the PSF sigma, over the PSF-fit flux, above extended_max
+    # (a point source gives 2k^2/(1+k^2) = 1.6 for a Gaussian PSF, ~1.7 for
+    # WISE's). Bright-star ghosts and halos drift slowly through dense
+    # fields and set the top false tracks there (17.0 on a Cassiopeia
+    # copy). Measured offline on 150 real NEOWISE runs (M4h detections):
+    # 1012 injected/known asteroid tracks <= 2.11, while 53% of
+    # scrambled-copy tracks >= 9 were above 2.2; held out over 30 visits
+    # (with static-source vetting) false 0.067 -> 0.044 per copy and
+    # completeness at W1 16 0.31 -> 0.41 off the plane. 0 = off.
+    extended_max: float = 2.2
+    extended_k: float = 2.0
     # Frames where a candidate passes within this many PSF FWHM of a stronger
     # candidate are released (``_release_shared_frames``). 2 px covered-only
     # (M2-M4) left 1/3 of the unmatched detections in real_v1/real_v2
@@ -252,6 +264,34 @@ def _static_significance(reg: Registered) -> np.ndarray:
         noise = np.sqrt(np.nanmedian(np.where(reg.valid, reg.var, np.nan), axis=0))
         z = static / noise
     return np.nan_to_num(z).astype(np.float32)
+
+
+def _extendedness(r: TrackScore, pre: Preprocessed, times, k: float) -> Optional[float]:
+    """Frame-combined Gaussian-fit flux at ``k`` x the PSF sigma over the
+    PSF-fit flux, on the residual maps at the track's used frames (None if
+    no frame can be measured or the PSF flux isn't positive)."""
+    xs, ys = r.track.position(times)
+    acc = np.zeros(4)
+    h, w = pre.resid.shape[1:]
+    for kf in np.flatnonzero(r.used):
+        sig = float(pre.psf_sigma_px[kf])
+        rad = int(math.ceil(4 * sig * k))
+        x, y = float(xs[kf]), float(ys[kf])
+        xi, yi = int(round(x)), int(round(y))
+        if not (rad <= xi < w - rad and rad <= yi < h - rad):
+            continue
+        gy, gx = np.mgrid[yi - rad:yi + rad + 1, xi - rad:xi + rad + 1]
+        d2 = (gx - x) ** 2 + (gy - y) ** 2
+        ww = pre.weight[kf, yi - rad:yi + rad + 1, xi - rad:xi + rad + 1]
+        rr = pre.resid[kf, yi - rad:yi + rad + 1, xi - rad:xi + rad + 1]
+        for j, s in enumerate((sig, sig * k)):
+            g = np.exp(-d2 / (2 * s * s))
+            g /= g.sum()
+            acc[2 * j] += float((g * ww * rr).sum())
+            acc[2 * j + 1] += float((g * g * ww).sum())
+    if acc[1] <= 0 or acc[3] <= 0 or acc[0] <= 0:
+        return None
+    return (acc[2] / acc[3]) / (acc[0] / acc[1])
 
 
 def _confusion_frac(static_z: np.ndarray, covered: np.ndarray, z: float) -> float:
@@ -434,6 +474,7 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
     ref_err = _blank_sky_flux_err(pre)
     n_kept_curved = 0
     kept_curved = set()
+    n_extended = 0
     for tr in chosen:
         r = evaluator.refine(tr, accel_max=_accel_bound_px(cfg, tr.speed, scale))
         if r is not None and r.n_used < cfg.accel_min_frames and (r.track.ax or r.track.ay):
@@ -469,6 +510,11 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
         if cfg.single_frame_max_frac and _single_frame_dominated(r, cfg):
             n_single_frame += 1
             continue
+        if cfg.extended_max:
+            ext = _extendedness(r, pre, times, cfg.extended_k)
+            if ext is not None and ext > cfg.extended_max:
+                n_extended += 1
+                continue
         refined.append(r)
     # Curved short tracks kept by keep_strong_curved come last, so they
     # can't take frames from a regular track (on real_v3 v001 one, made of
@@ -496,7 +542,7 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
 
     stats.update(n_seeds=len(seeds), n_refined=len(chosen), n_inconsistent=n_inconsistent,
                  n_star_noise=n_star_noise, n_single_frame=n_single_frame,
-                 n_kept_curved=n_kept_curved,
+                 n_kept_curved=n_kept_curved, n_extended=n_extended,
                  flux_err_ref=ref_err.tolist(),
                  timing=timing,
                  max_score=max((r.score for r in refined), default=None))
