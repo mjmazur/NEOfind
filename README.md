@@ -248,12 +248,13 @@ The false-alarm tail varies by ~2× across the sky: null levels are
 6.5–8 along the ecliptic and at high latitude, 9–12 in the Galactic plane
 and 11–16 toward the bulge. The factors are calibrated on 30 visits
 (`sims/real_v1` + `sims/real_v3`, 11 in the plane). Held out one visit at
-a time (calibrated on the other 29):
+a time (calibrated on the other 29), on the detector's own output (full
+reruns M4l, M4m; earlier rows from saved results):
 
 | scheme | false per null copy | W1 15–15.5 / 15.5–16 / 16–16.5, off plane | in plane |
 |---|---|---|---|
-| per-visit, 1 copy, static-source + extendedness vetting (default) | 0.044 | 0.92 / 0.78 / 0.41 | 0.76 / 0.27 / 0.07 |
-| per-visit, 1 copy, static-source vetting only | 0.067 | 0.95 / 0.77 / 0.31 | 0.67 / 0.24 / 0.02 |
+| per-visit, 1 copy, static-source + extendedness vetting (default, M4m) | 0.067 | 0.94 / 0.80 / 0.41 | 0.76 / 0.30 / 0.07 |
+| per-visit, 1 copy, static-source vetting only (M4l) | 0.067 | 0.94 / 0.76 / 0.31 | 0.67 / 0.24 / 0.02 |
 | per-visit, 1 copy, neither | 0.067 | 0.92 / 0.65 / 0.11 | 0.61 / 0.15 / 0.00 |
 | per-visit, 2 copies | 0.078 | 0.92 / 0.63 / 0.10 | 0.59 / 0.12 / 0.00 |
 | global thresholds | 0.122 | 0.80 / 0.35 / 0.00 | 0.57 / 0.03 / 0.00 |

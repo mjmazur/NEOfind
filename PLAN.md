@@ -486,7 +486,7 @@ sweep.py, tests/
     W1 14.9 asteroid in a field at b = -23 (7 of 9 frames on faint stars,
     static z 3.3-8.9). With extendedness vetting the calibration is
     NULL_RATIO 1.80 / 1.38 / 1.25, fixed thresholds 9.75 / 9.25 / 9.25
-    (M4m confirming).
+    (confirmed by M4m, below).
   - Crowded-field flag (`crowded_frac` 0.45, `--skip-crowded`): the
     fraction of covered sky within 1 px of a static source (z > 3) is
     <= 0.34 on the 25 visits where injected W1 14.5-15.5 asteroids were
@@ -520,9 +520,24 @@ sweep.py, tests/
     W1 15 / 15.5 / 16 0.95 / 0.77 / 0.31 -> 0.92 / 0.78 / 0.41 off the
     plane and 0.67 / 0.24 / 0.02 -> 0.76 / 0.27 / 0.07 in it (2.0: 0.078
     false). With both: NULL_RATIO 1.80 / 1.38 / 1.25, fixed real-WISE
-    thresholds 9.75 / 9.25 / 9.25 (22 quiet visits) -- applied with the
-    static-source vetting, still pending. Needs a full rerun to confirm in
-    the detector; M4l predates it.
+    thresholds 9.75 / 9.25 / 9.25 (22 quiet visits).
+    Confirmed by a full rerun (M4m: static-source + extendedness vetting,
+    curved-track gate z >= 9, minimum null level, committed calibration).
+    Held out over 30 visits on its own output: 0.067 false per copy (6
+    events in 90, offline estimate 4), completeness W1 15 / 15.5 / 16
+    0.94 / 0.80 / 0.41 off the plane (M4l 0.94 / 0.76 / 0.31) and 0.76 /
+    0.30 / 0.07 in it (M4l 0.67 / 0.24 / 0.02). Per set, each version with
+    its own calibration: real_v3 (11 plane fields) no false tracks in 45
+    copies (M4l and M4h 4), W1 15 / 16 52 / 13 of 65 / 60 found (M4l 49 /
+    7, M4h 44 / 4), 15 more than M4l and none lost; real_v1 2 false in 45
+    (0.044), W1 16 24 / 69 (M4l 10); real_v2 2 false in 45, W1 16 28 / 80
+    (M4l 22), 3 fewer at W1 14.5-15 (the higher 3-frame threshold);
+    wise_v1 / wise_v2 identical to M4h (212 / 209 of 286, 3 false in 72
+    nulls). The crowded flag marked exactly the five dense fields.
+    Refit on M4m, NULL_RATIO would be 1.66 / 1.37 / 1.25 and the quiet-sky
+    thresholds 9.25 / 9.25 / 9.25; over all 135 copies 1.66 gives 7 false
+    tracks vs 4 at 1.80 for 5 more of ~1400 asteroids, so the committed
+    values stay.
   - Minimum null level (`nullcal.MIN_LEVEL` 6.5): in M4m a quiet 9-frame
     high-latitude visit (v008) kept fewer than 5 candidates above the
     report threshold in a scrambled copy once extendedness vetting
@@ -532,7 +547,9 @@ sweep.py, tests/
     is the 5th percentile of single-copy levels before extendedness
     vetting (M4l; 1 copy in 77 below it, 4 in M4m). With it, M4m on 10
     finished real_v3 visits: no false tracks in 30 copies (M4l 4), real_v1
-    unchanged (2 in 45). Provisional until a held-out check on all of M4m.
+    unchanged (2 in 45). Held out on all of M4m: 6.0 and 7.0 give 5 false
+    events in 90 copies, 6.5 gives 6, with the same completeness within
+    one asteroid per bin -- noise, so 6.5 stays.
   - Per-frame tail calibration: tested offline, not adopted. Per frame
     of all 30 visits, the 1e-4 upper quantile of the SNR map on star-free
     sky relative to the visit median: 95th percentile 1.57, 99th 3.0.

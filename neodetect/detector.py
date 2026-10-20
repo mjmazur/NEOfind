@@ -106,9 +106,11 @@ class DetectorConfig:
     # fields and set the top false tracks there (17.0 on a Cassiopeia
     # copy). Measured offline on 150 real NEOWISE runs (M4h detections):
     # 1012 injected/known asteroid tracks <= 2.11, while 53% of
-    # scrambled-copy tracks >= 9 were above 2.2; held out over 30 visits
-    # (with static-source vetting) false 0.067 -> 0.044 per copy and
-    # completeness at W1 16 0.31 -> 0.41 off the plane. 0 = off.
+    # scrambled-copy tracks >= 9 were above 2.2. Full rerun (M4m), held
+    # out over 30 visits with static-source vetting: false rate unchanged
+    # (0.067 per copy), completeness at W1 16 0.31 -> 0.41 off the plane
+    # and 0.02 -> 0.07 in it; real_v3 (11 plane fields) no false tracks in
+    # 45 copies (4 before); simulated sweeps identical. 0 = off.
     extended_max: float = 2.2
     extended_k: float = 2.0
     # Frames where a candidate passes within this many PSF FWHM of a stronger

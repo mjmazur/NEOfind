@@ -65,9 +65,12 @@ NULL_RANK = 5
 # Calibrated on real NEOWISE W1 single exposures: 30 visits x 3 scrambled
 # copies (sims/real_v1 along the ecliptic, sims/real_v3 incl. 11 Galactic-
 # plane fields), final M4 detector, held-out copies, <= 0.05 false per visit.
-# Held out one visit at a time (calibrated on the other 29): 0.044 false per
-# copy with the level from one copy (with static-source and extendedness
-# vetting). Recalibrate with ``neodetect evaluate``
+# Held out one visit at a time (calibrated on the other 29), on a full
+# rerun of the detector with static-source and extendedness vetting (M4m):
+# 0.067 false per copy with the level from one copy (offline estimate
+# 0.044; 6 events in 90 copies vs 4). Refit on M4m the 3-frame ratio would
+# be 1.66, but over all 135 copies that gives 7 false tracks vs 4 for 1.80
+# for 5 more of ~1400 injected asteroids, so 1.80 stays. Recalibrate with ``neodetect evaluate``
 # (``per_visit.ratios``) after detector changes.
 NULL_RATIO = {"3": 1.80, "4": 1.38, "5+": 1.25}
 # Guard mode: a visit's thresholds are raised by level / GUARD_LEVEL when
