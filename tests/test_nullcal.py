@@ -88,3 +88,13 @@ def test_null_level_has_a_minimum():
     # vetting removed the rest) must not drag thresholds down to noise.
     assert nullcal.null_level([[8.0, 6.0, 5.5]]) == nullcal.MIN_LEVEL
     assert nullcal.null_level([[9.0, 8.5, 8.0, 7.5, 7.2]]) == 7.2
+
+
+def test_real_wise_skips_crowded_fields_by_default():
+    from types import SimpleNamespace
+    from astropy.io import fits
+    from neodetect.io import default_skip_crowded
+    h = fits.Header({"TELESCOP": "WISE"})
+    assert default_skip_crowded(SimpleNamespace(header=h))
+    h["SIMULATD"] = True
+    assert not default_skip_crowded(SimpleNamespace(header=h))

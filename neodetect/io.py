@@ -167,6 +167,14 @@ def default_null_scrambles(frame: "Frame") -> int:
     return 1 if _is_real_wise(frame.header) else 0
 
 
+def default_skip_crowded(frame: "Frame") -> bool:
+    """Skip the search in a crowded field (``DetectorConfig.crowded_frac``):
+    on for real WISE frames. Over 30 real NEOWISE visits the five crowded
+    ones took 1.5-3.5 h per run and found almost nothing (W1 16
+    completeness 0.07 in the plane at best, none in the bulge)."""
+    return _is_real_wise(frame.header)
+
+
 # Fixed detection thresholds (3 / 4 / >= 5 frames) for real NEOWISE W1 when
 # no scrambled copy is run (--null-scrambles 0): calibrated on the 22 quiet
 # visits (median one-copy null level <= 7.5) of sims/real_v1 + real_v3 with

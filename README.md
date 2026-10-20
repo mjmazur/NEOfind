@@ -276,9 +276,10 @@ vetting's map). From `crowded_frac` = 0.45 on, the visit is flagged
 `crowded` in the stats and the listing. Over 30 real NEOWISE visits the
 fraction was ≤ 0.34 wherever injected W1 14.5–15.5 asteroids were found
 reliably, and ≥ 0.54 in the five bulge and plane fields, where null levels
-reached 9.4–14.8 and completeness collapsed. `--skip-crowded` stops there
-(12 s on a bulge visit, instead of hours), with no candidates and no null
-calibration.
+reached 9.4–14.8 and completeness collapsed. On real WISE frames the
+search then stops (12 s on a bulge visit, instead of 1.5–3.5 h per run),
+with no candidates and no null calibration; `--no-skip-crowded` searches
+anyway, and `--skip-crowded` turns skipping on for other instruments.
 
 **Reporting** (`report.py`): `--ades FILE` writes ADES PSV for the MPC,
 one row per frame a detection uses: the track position at that frame's

@@ -493,7 +493,9 @@ sweep.py, tests/
     found reliably and >= 0.54 on the five bulge/plane fields with null
     levels 9.4-14.8 and collapsed completeness. Flagged in the stats and
     printed; `--skip-crowded` stops after registration (12 s instead of
-    hours on the bulge).
+    hours on the bulge). Default for real WISE since M4m: there the five
+    crowded visits took 1.5-3.5 h per run for W1 16 completeness of 0.07 in
+    the plane at best (`--no-skip-crowded` to search anyway).
   - Suspected unknown asteroids (`review.py`, `neodetect review`):
     detections get a status (known / near-known / suspect / unchecked)
     against `known.json` (or SkyBoT, `--skybot`, any station); per suspect

@@ -12,7 +12,7 @@ import numpy as np
 from astropy.coordinates import SkyCoord
 
 from .io import (Sequence, default_aperture_correction, default_aperture_ee, default_thresholds,
-                 default_centroid_offset, world2pix)
+                 default_centroid_offset, default_skip_crowded, world2pix)
 from .linking import link
 from .preprocess import Preprocessed, preprocess
 from .register import Registered, _static_sky, register
@@ -96,9 +96,11 @@ class DetectorConfig:
     # real NEOWISE visits the fraction was <= 0.34 wherever injected W1
     # 14.5-15.5 asteroids were found reliably and >= 0.54 in the five
     # Galactic bulge/plane fields where null levels reached 9.4-14.8 and
-    # completeness collapsed. 0 = off.
+    # completeness collapsed. 0 = off. skip_crowded None = the instrument's
+    # default (``io.default_skip_crowded``: on for real WISE, where a
+    # crowded visit took 1.5-3.5 h per run and found almost nothing).
     crowded_frac: float = 0.45
-    skip_crowded: bool = False
+    skip_crowded: Optional[bool] = None
     # Reject extended tracks: the frame-combined flux fitted with a Gaussian
     # extended_k x the PSF sigma, over the PSF-fit flux, above extended_max
     # (a point source gives 2k^2/(1+k^2) = 1.6 for a Gaussian PSF, ~1.7 for
@@ -396,6 +398,8 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
         if t is not None:
             cfg = replace(cfg, detect_threshold_3=t[0], detect_threshold_4=t[1],
                           detect_threshold=t[2])
+    if cfg.skip_crowded is None:
+        cfg = replace(cfg, skip_crowded=bool(seq.frames) and default_skip_crowded(seq.frames[0]))
     timing = {}
     t = time.time()
     reg = register(seq, ref=cfg.ref_frame, region=cfg.region,

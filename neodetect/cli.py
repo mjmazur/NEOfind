@@ -55,9 +55,10 @@ def _add_detector_args(p: argparse.ArgumentParser) -> None:
                    help=f"... using 3 frames (default: instrument's, else {d.detect_threshold_3})")
     g.add_argument("--report-threshold", type=float, default=d.report_threshold,
                    help=f"keep candidates above this for diagnostics (default: {d.report_threshold})")
-    g.add_argument("--skip-crowded", action="store_true",
-                   help=f"skip the search in a crowded field (>= {d.crowded_frac:.0%} of the sky "
-                        "on static sources, e.g. the Galactic bulge): flagged either way")
+    g.add_argument("--skip-crowded", action=argparse.BooleanOptionalAction, default=None,
+                   help=f"skip the search in a crowded field (>= {d.crowded_frac * 100:.0f}%% of the sky "
+                        "on static sources, e.g. the Galactic bulge), flagged either way "
+                        "(default: on for real WISE frames, else off)")
     g.add_argument("--threads", type=int, default=0, help="threads (default: all cores)")
 
 
