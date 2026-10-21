@@ -316,7 +316,13 @@ sheet per suspect to `DIR/review/` (`index.html` shows them all):
 - lower row: the same with the median of the other frames subtracted,
   which removes the stars;
 - an orange border marks frames the score didn't use, dark blue marks
-  masked or off-frame pixels.
+  masked or off-frame pixels;
+- a last, green-bordered **stack** panel averages the used frames along
+  the track (a shift-and-stack): near the limit a mover is invisible in
+  any one frame (z 2-4 each) but plain in the stack. Under it: the
+  object's name, discovery date and site (JPL Small-Body Database, cached
+  in `review/discovery.json`; `--all` makes sheets for known objects too)
+  and V magnitude, or "not catalogued".
 
 It then asks for a verdict on each unreviewed suspect: `c` confirm, `r`
 reject, `s` skip, `q` quit, optionally followed by a note. Without a

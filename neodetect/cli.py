@@ -360,8 +360,13 @@ def cmd_review(args) -> int:
     sheet_dir = visit_dir / review.SHEET_DIR
     if rows and not args.no_sheets:
         seq = seq or _review_frames(doc, visit_dir)
+        cache_path = sheet_dir / "discovery.json"
+        cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
         for i in rows:
-            review.write_sheet(seq.frames, doc, i, sheet_dir / f"det{i:03d}.png")
+            info = review.sheet_info(dets[i], catalog, cache)
+            review.write_sheet(seq.frames, doc, i, sheet_dir / f"det{i:03d}.png", info=info)
+        sheet_dir.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(cache, indent=1))
 
     interactive = args.interactive if args.interactive is not None else (
         sys.stdin.isatty() and not (args.confirm or args.reject or args.list))

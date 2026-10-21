@@ -97,3 +97,18 @@ def test_difference_stamps_remove_stars_and_keep_the_mover():
         yx = np.unravel_index(np.nanargmax(np.where(np.hypot(*np.mgrid[-20:21, -20:21]) > 4, img, -1e9)),
                               img.shape)
         assert img[yx] > 30.0 and abs(diff[yx]) < 10.0
+
+
+def test_sheet_info_names_the_catalogued_object(monkeypatch):
+    calls = []
+
+    def fake_discovery(key, cache=None):
+        calls.append(key)
+        return {"fullname": "380673 (2005 GN25)", "date": "2005-Apr-02", "location": "Mount Lemmon"}
+    monkeypatch.setattr(review, "discovery", fake_discovery)
+    cat = {"asteroids": [{"id": "380673", "name": "2005 GN25", "v_mag": 22.06}]}
+    info = review.sheet_info({"known_id": "380673"}, cat)
+    assert info == {"name": "380673 (2005 GN25)", "discovered": "2005-Apr-02", "site": "Mount Lemmon",
+                    "v_mag": 22.06}
+    assert review.sheet_info({"near_known": {"id": "380673"}}, cat)["name"].startswith("near ")
+    assert review.sheet_info({}, cat) == {"name": "not catalogued"}

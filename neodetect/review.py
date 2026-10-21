@@ -34,6 +34,7 @@ import numpy as np
 
 from .evaluate import MATCH_TOL_PX
 
+SBDB = "https://ssd-api.jpl.nasa.gov/sbdb.api"
 NEAR_KNOWN_ARCSEC = 60.0
 NEAR_KNOWN_RATE_FRAC = 0.3
 REVIEW_NAME = "review.json"
@@ -154,6 +155,50 @@ def set_verdict(verdicts: List[dict], doc: dict, i: int, verdict: str, note: str
     return v
 
 
+# --------------------------------------------------------- object details
+
+def discovery(key, cache: Optional[dict] = None) -> Optional[dict]:
+    """Full name and discovery circumstances of a catalogued object (number
+    or designation) from JPL's Small-Body Database, or None (unknown to it,
+    or no network). ``cache`` (key -> result) avoids repeated queries."""
+    import urllib.parse
+    import urllib.request
+    key = str(key).strip()
+    if cache is not None and key in cache:
+        return cache[key]
+    info = None
+    try:
+        url = f"{SBDB}?{urllib.parse.urlencode({'sstr': key, 'discovery': 'true'})}"
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "NEOfind"}),
+                                    timeout=30) as r:
+            doc = json.loads(r.read().decode())
+        disc = doc.get("discovery") or {}
+        info = {"fullname": doc["object"]["fullname"], "date": disc.get("date"),
+                "who": disc.get("who"), "location": disc.get("location")}
+    except Exception:
+        return None  # not cached: a later run may have the network
+    if cache is not None:
+        cache[key] = info
+    return info
+
+
+def sheet_info(d: dict, catalog: Optional[dict], cache: Optional[dict] = None) -> dict:
+    """What the stack panel says about detection ``d``: the catalogued
+    object's name, discovery date and V magnitude, or "not catalogued"."""
+    if d.get("known_id") is not None:
+        oid, pre = d["known_id"], ""
+    elif d.get("near_known"):
+        oid, pre = d["near_known"]["id"], "near "
+    else:
+        return {"name": "not catalogued"}
+    obj = next((a for a in (catalog or {}).get("asteroids", []) if str(a["id"]) == str(oid)), {})
+    disc = discovery(oid, cache)
+    v = obj.get("v_mag")
+    return {"name": pre + (disc["fullname"] if disc else str(obj.get("name", oid))),
+            "discovered": (disc or {}).get("date"), "site": (disc or {}).get("location"),
+            "v_mag": v if v is not None and v == v else None}
+
+
 # ------------------------------------------------------------ cutout sheets
 
 def _local_sky(fr, x: float, y: float, r: int = 40) -> float:
@@ -228,11 +273,15 @@ def stamps(frames, d: dict, half: int = 12, scale_arcsec: float = None):
 
 
 def write_sheet(frames, doc: dict, i: int, path, half: int = 12, zoom: int = 4,
-                max_cols: int = 9) -> Path:
+                max_cols: int = 9, info: Optional[dict] = None) -> Path:
     """PNG contact sheet for detection ``i``: per frame, the image (upper)
     and the difference (lower) around the track, north up, marked at its
     position; frames the score didn't use have an orange border, masked
-    or off-frame pixels are dark blue."""
+    or off-frame pixels are dark blue. A last panel (green border) stacks
+    the used frames along the track: the stamps are centred on the track,
+    so their mean is a shift-and-stack, and a mover too faint to see in
+    any one frame (z ~ 2-4 each) shows there. ``info`` (``sheet_info``) is
+    written under it: name, discovery date and site, V magnitude."""
     import warnings
     from PIL import Image, ImageDraw
 
@@ -240,6 +289,9 @@ def write_sheet(frames, doc: dict, i: int, path, half: int = 12, zoom: int = 4,
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)  # all-nan medians off the frame edge
         st = stamps(frames, d, half, doc["stats"]["pixel_scale_arcsec"])
+        used = [s for s in st if d["frames"][s[0]]["used"]]
+        stack = (np.nanmean([s[1] for s in used], axis=0), np.nanmean([s[2] for s in used], axis=0)) \
+            if used else None
     vals = np.concatenate([s[2].ravel() for s in st] or [np.zeros(1)])
     vals = vals[np.isfinite(vals)]
     if vals.size:
@@ -248,9 +300,20 @@ def write_sheet(frames, doc: dict, i: int, path, half: int = 12, zoom: int = 4,
         sig = 1.0
     size = (2 * half + 1) * zoom
     head = 30
-    ncol = min(max(len(st), 1), max_cols)
-    nrow = max(1, math.ceil(len(st) / max_cols))
-    W, H = ncol * (size + 4), head + nrow * (2 * size + 22)
+    n_panels = len(st) + (stack is not None)
+    ncol = min(max(n_panels, 1), max_cols)
+    nrow = max(1, math.ceil(n_panels / max_cols))
+    lines = []
+    if info:
+        lines = [info.get("name") or ""]
+        if info.get("discovered"):
+            lines.append(f"disc. {info['discovered']}")
+        if info.get("site"):
+            lines.append(info["site"])
+        if info.get("v_mag") is not None:
+            lines.append(f"V {info['v_mag']:.1f}")
+    foot = 12 * len(lines) + 4 if lines else 0
+    W, H = ncol * (size + 4), head + nrow * (2 * size + 22) + foot
     canvas = Image.new("RGB", (W, H), (0, 0, 0))
     dr = ImageDraw.Draw(canvas)
     mag = f"mag {d['mag']:.2f}" if d.get("mag") is not None else ""
@@ -263,24 +326,36 @@ def write_sheet(frames, doc: dict, i: int, path, half: int = 12, zoom: int = 4,
     dr.text((4, 2), f"#{i}  score {d['score']:.1f}  {d['n_frames_used']}/{d['n_frames_covered']} frames  "
                     f"{d['rate_deg_day']:.3f} deg/day  PA {d['pa_deg']:.0f}  {mag}", fill=(255, 255, 255))
     dr.text((4, 15), f"RA {d['ra_deg']:.5f}  Dec {d['dec_deg']:+.5f}  {tag}", fill=(200, 200, 200))
-    for n, (k, img, diff) in enumerate(st):
+
+    def panel(n, label, img, diff, s, border=None):
         r, c = divmod(n, max_cols)
         x0, y0 = c * (size + 4), head + r * (2 * size + 22)
-        for row, (a, lo, hi) in enumerate(((img, -3 * sig, 15 * sig), (diff, -3 * sig, 8 * sig))):
+        for row, (a, lo, hi) in enumerate(((img, -3 * s, 15 * s), (diff, -3 * s, 8 * s))):
             u8 = (np.clip((np.nan_to_num(a, nan=lo) - lo) / (hi - lo), 0, 1) * 255).astype(np.uint8)
             rgb = np.repeat(u8[::-1, :, None], 3, axis=2)
             rgb[np.isnan(a)[::-1]] = (20, 30, 70)  # masked / off the frame
-            panel = Image.fromarray(rgb).resize((size, size), Image.NEAREST)
+            canvas.paste(Image.fromarray(rgb).resize((size, size), Image.NEAREST), (x0, y0 + 12 + row * (size + 2)))
             yy = y0 + 12 + row * (size + 2)
-            canvas.paste(panel, (x0, yy))
             cx, cy = x0 + size / 2, yy + size / 2
             for a0, b0 in ((-3 * zoom - 6, -3 * zoom), (3 * zoom, 3 * zoom + 6)):
                 dr.line([cx + a0, cy, cx + b0, cy], fill=(255, 60, 60))
                 dr.line([cx, cy + a0, cx, cy + b0], fill=(255, 60, 60))
-            if not d["frames"][k]["used"]:
-                dr.rectangle([x0, yy, x0 + size - 1, yy + size - 1], outline=(255, 180, 0))
+            if border:
+                dr.rectangle([x0, yy, x0 + size - 1, yy + size - 1], outline=border)
+        dr.text((x0 + 2, y0), label, fill=(255, 255, 255))
+
+    for n, (k, img, diff) in enumerate(st):
         z = d["frames"][k]["z"]
-        dr.text((x0 + 2, y0), f"{k}" + (f" z={z:.1f}" if z is not None else ""), fill=(255, 255, 255))
+        panel(n, f"{k}" + (f" z={z:.1f}" if z is not None else ""), img, diff, sig,
+              None if d["frames"][k]["used"] else (255, 180, 0))
+    if stack is not None:
+        panel(len(st), f"stack of {len(used)}", stack[0], stack[1], sig / math.sqrt(len(used)), (60, 220, 90))
+        r, c = divmod(len(st), max_cols)
+        x0, y0 = c * (size + 4), head + r * (2 * size + 22) + 2 * size + 18
+        if x0 + 6 * max(map(len, lines or [""])) > W:  # keep the text on the sheet
+            x0 = max(0, W - 6 * max(map(len, lines)) - 2)
+        for j, line in enumerate(lines):
+            dr.text((x0 + 2, y0 + 12 * j), line, fill=(120, 230, 140))
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(path)

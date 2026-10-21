@@ -559,7 +559,8 @@ sweep.py, tests/
     cut. First visit (Oceana field, 2010-05-14, 18 frames, W1-calibrated
     thresholds): W3 13 detections, all catalogued, V 18.9-22.2, every one
     with V <= 20 on >= 3 frames found (4/4), 7/8 to V 21, 11/28 to V 22
-    (two, 2014 OJ226 and 2016 EM130, discovered after 2010); W4 4. Noise
+    (all discovered before the visit: 2014 OJ226 on 2010-04-12, 2016
+    EM130 in 2007, per JPL SBDB); W4 4. Noise
     model and null levels (7.07, 6.50) as in W1. A W3/W4 calibration set
     (the 30 W1 calibration positions at their 2010 epoch, mirrored sweeps)
     is running. Also fixed: `review --skybot` searched around the first
