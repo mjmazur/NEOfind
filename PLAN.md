@@ -552,6 +552,18 @@ sweep.py, tests/
     unchanged (2 in 45). Held out on all of M4m: 6.0 and 7.0 give 5 false
     events in 90 copies, 6.5 gives 6, with the same completeness within
     one asteroid per bin -- noise, so 6.5 stays.
+  - W3/W4 (cryogenic WISE, 2010): asteroids glow thermally at 12/22 um,
+    so these bands reach far fainter ones than W1. `neowise` fetches them
+    (`--band 3/4`, default table `allsky`, 2010-01-07 .. 2010-08-06); known
+    objects keep positions only (no thermal magnitude model yet) and no V
+    cut. First visit (Oceana field, 2010-05-14, 18 frames, W1-calibrated
+    thresholds): W3 13 detections, all catalogued, V 18.9-22.2, every one
+    with V <= 20 on >= 3 frames found (4/4), 7/8 to V 21, 11/28 to V 22
+    (two, 2014 OJ226 and 2016 EM130, discovered after 2010); W4 4. Noise
+    model and null levels (7.07, 6.50) as in W1. A W3/W4 calibration set
+    (the 30 W1 calibration positions at their 2010 epoch, mirrored sweeps)
+    is running. Also fixed: `review --skybot` searched around the first
+    frame (a sliver at the edge here) and kept stale labels on reclassifying.
   - Per-frame tail calibration: tested offline, not adopted. Per frame
     of all 30 visits, the 1e-4 upper quantile of the SNR map on star-free
     sky relative to the visit median: 95th percentile 1.57, 99th 3.0.
@@ -583,6 +595,9 @@ sweep.py, tests/
     15.4 at 4.6 deg/day, above its copy's threshold) → `keep_curved_min_z`
     9: keeps 7 recoveries, no false tracks. Kept curved tracks come last,
     so the gate can be applied to saved results exactly (M4m ran at 7).
+  - W2 vs W1 on the 30 calibration visits: stopped partway (50 of 150 runs)
+    for W3/W4. Partial: W2's 50% completeness at W2 14.6 vs W1 16.1 off the
+    plane (8 visits).
   - Open from M4: bright fast movers (linker curvature, above);
     the global thresholds rest on 15 ecliptic visits -- recheck the guard
     level on new sky (Galactic plane).

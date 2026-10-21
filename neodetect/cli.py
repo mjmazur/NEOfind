@@ -301,11 +301,23 @@ def _skybot_catalog(seq, visit_dir, station, log):
     loc = "500" if wise else (station or str(fr.header.get("MPCCODE", "") or ""))
     if not loc:
         raise SystemExit("--skybot needs the observatory: --station CODE (or MPCCODE in the headers)")
-    ny, nx = fr.shape
-    ra, dec = fr.wcs.all_pix2world([0, nx - 1, 0, nx - 1, (nx - 1) / 2], [0, 0, ny - 1, ny - 1, (ny - 1) / 2], 0)
-    c = (float(ra[4]), float(dec[4]))
-    cosd = np.cos(np.radians(c[1]))
-    radius = float(np.max(np.hypot(((ra[:4] - c[0] + 180) % 360 - 180) * cosd, dec[:4] - c[1]))) + 0.05
+    meta_path = Path(visit_dir) / "visit.json"
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    if meta.get("center") and meta.get("size_deg"):  # a neowise visit: its own region
+        c = tuple(meta["center"])
+        radius = meta["size_deg"] / 2 ** 0.5 + 0.05
+    else:  # every frame's corners (one frame can be a sliver at the region's edge)
+        corners = []
+        for f in seq.frames:
+            ny, nx = f.shape
+            ra, dec = f.wcs.all_pix2world([0, nx - 1, 0, nx - 1], [0, 0, ny - 1, ny - 1], 0)
+            corners += list(zip(ra, dec))
+        ra, dec = np.array(corners).T
+        v = np.array([np.cos(np.radians(dec)) * np.cos(np.radians(ra)),
+                      np.cos(np.radians(dec)) * np.sin(np.radians(ra)), np.sin(np.radians(dec))]).mean(axis=1)
+        c = (float(np.degrees(np.arctan2(v[1], v[0])) % 360), float(np.degrees(np.arcsin(v[2] / np.linalg.norm(v)))))
+        cosd = np.cos(np.radians(c[1]))
+        radius = float(np.max(np.hypot(((ra - c[0] + 180) % 360 - 180) * cosd, dec - c[1]))) + 0.05
     log(f"querying SkyBoT ({'C51 via 500 + spacecraft offset' if wise else loc}) per frame, "
         f"{radius:.2f} deg around {c[0]:.4f} {c[1]:+.4f}")
     band = int(str(fr.band or "1").upper().lstrip("W") or 1) if wise else 1

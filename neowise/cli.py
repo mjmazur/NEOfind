@@ -24,8 +24,15 @@ def _log(msg):
     print(msg, flush=True)
 
 
+def _tables(a):
+    """Mission phases to search: the given ones, else the band's default."""
+    if a.tables:
+        return a.tables.split(",")
+    return list(query.DEFAULT_TABLES[a.band])
+
+
 def _visits(a):
-    tables = a.tables.split(",")
+    tables = _tables(a)
     frames = query.search(a.ra, a.dec, band=a.band, tables=tables, size_deg=a.size)
     visits = [query.one_per_orbit(v, a.ra, a.dec) for v in
               query.group_visits(frames, max_span_days=a.max_span)]
@@ -71,6 +78,8 @@ def cmd_fetch(a):
 
 
 def _known(visit_dir, center, size, band, max_v):
+    if max_v is None:  # W3/W4 see asteroids by their thermal glow, far fainter than V 21
+        max_v = 21.0 if band <= 2 else 99.0
     from neodetect.io import load_sequence
     from .known import write_known
     seq = load_sequence(visit_dir)
@@ -146,10 +155,12 @@ def main(argv=None) -> int:
         q.add_argument("ra", type=float, help="deg")
         q.add_argument("dec", type=float, help="deg")
         q.add_argument("--size", type=float, default=0.5, help="square region side, deg (default 0.5)")
-        q.add_argument("--band", type=int, default=1, choices=(1, 2))
-        q.add_argument("--tables", default="neowiser",
+        q.add_argument("--band", type=int, default=1, choices=(1, 2, 3, 4),
+                       help="WISE band; W3 (12 um) and W4 (22 um) exist only in the "
+                            "cryogenic mission, 2010-01-07 .. 2010-08-06 (default 1)")
+        q.add_argument("--tables", default=None,
                        help=f"comma-separated mission phases: {', '.join(query.TABLES)} "
-                            "(default: neowiser)")
+                            "(default: neowiser for W1/W2, allsky for W3/W4)")
         q.add_argument("--min-frames", type=int, default=5, help="skip shorter visits (default 5)")
         q.add_argument("--max-span", type=float, default=None,
                        help="split visits longer than this many days")
@@ -165,13 +176,14 @@ def main(argv=None) -> int:
                    help=f"directory (default: {DATA_DIR}/<position>/<date>)")
     q.add_argument("--full-frames", action="store_true", help="whole frames, not cutouts")
     q.add_argument("--no-known", action="store_true", help="skip the SkyBoT query")
-    q.add_argument("--max-v", type=float, default=21.0,
-                   help="faintest known object (V) to keep (default 21)")
+    q.add_argument("--max-v", type=float, default=None,
+                   help="faintest known object (V) to keep (default: 21 for W1/W2, none for W3/W4)")
     q.set_defaults(func=cmd_fetch)
 
     q = sub.add_parser("known", help="(re)build known.json for a downloaded visit")
     q.add_argument("visit_dir")
-    q.add_argument("--max-v", type=float, default=21.0)
+    q.add_argument("--max-v", type=float, default=None,
+                   help="faintest known object (V) to keep (default: 21 for W1/W2, none for W3/W4)")
     q.set_defaults(func=cmd_known)
 
     q = sub.add_parser("inject", help="copy a visit with synthetic asteroids added")

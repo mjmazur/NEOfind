@@ -129,3 +129,26 @@ def test_scramble_permutes_times(sim_visit, tmp_path):
     moved = [abs(by_name[f.path.split("/")[-1].split("-int")[0]] - f.mjd) > 1e-6 for f in b.frames]
     assert any(moved)
     assert json.loads((out / "truth.json").read_text())["asteroids"] == []
+
+
+def test_thermal_bands_default_to_the_cryogenic_survey():
+    from neowise import query
+    from neowise.known import V_MINUS_W
+    assert query.DEFAULT_TABLES[3] == ("allsky",) and query.DEFAULT_TABLES[4] == ("allsky",)
+    assert query.DEFAULT_TABLES[1] == ("neowiser",)
+    assert 3 not in V_MINUS_W and 4 not in V_MINUS_W  # thermal: no reflected-light prediction
+
+
+def test_skybot_retries_without_comets(monkeypatch):
+    from neowise import known
+    calls = []
+
+    def fake_get(url, timeout=0):
+        calls.append(url)
+        if "objFilter=111" in url:
+            return (b"# Flag: -1\n# Ticket: 1\nSkyBoT comet conesearch -> Bad request: "
+                    b"Epoch 2455226.7 not available...")
+        return b"# Flag: 0\n"
+    monkeypatch.setattr(known, "http_get", fake_get)
+    assert known.skybot_cone(55226.7, 42.5, 16.3, 0.4) == []
+    assert len(calls) == 2 and "objFilter=110" in calls[1]

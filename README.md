@@ -452,6 +452,7 @@ and the real 50% point was W1 ≈ 15.4.
 ```bash
 python -m neowise visits 152.09 11.47                 # visits covering a position
 python -m neowise fetch 152.09 11.47 --visit 2        # 0.5 deg cutouts + known.json
+python -m neowise fetch 152.09 11.47 --band 3 --size 0.6   # W3 (12 um), cryogenic 2010
 python -m neodetect detect data/neowise/<pos>/<date>  # search; labels known objects
 python -m neowise inject <visit> -o OUT --n 20        # synthetic asteroids in real frames
 python -m neowise scramble <visit> -o OUT             # null test: frame times permuted
@@ -460,7 +461,14 @@ python -m neodetect evaluate sims/real_v1             # completeness / false ala
 ```
 
 - **Search** (`query.py`): IRSA IBE metadata tables for the cryogenic,
-  post-cryo and NEOWISE-R phases (`--tables`, default `neowiser`). A
+  post-cryo and NEOWISE-R phases (`--tables`; default `neowiser` for W1/W2,
+  `allsky` for W3/W4). W3 (12 µm) and W4 (22 µm) exist only in the
+  cryogenic mission: the 4-band survey, 2010-01-07 .. 2010-08-06, and for
+  W3 the 3-band phase after it. There an asteroid's own thermal emission
+  dominates, so they reach far fainter asteroids than W1: on one 2010 W3
+  visit (the Oceana field, W1 thresholds) the detector found 13 catalogued
+  asteroids, V 18.9-22.2, all with V <= 20 on >= 3 frames, where a
+  NEOWISE W1 visit reaches V ~ 18. W4 frames are 2x2-binned (5.5"/px). A
   position near the ecliptic is seen on ~12-20 consecutive orbits every ~6
   months; such a run is a *visit*. One frame per orbit (the one centered
   nearest the target) and only frames covering ≥ 10% of the region are kept.
@@ -476,8 +484,11 @@ python -m neodetect evaluate sims/real_v1             # completeness / false ala
   parallax at 2.7 AU), so positions are shifted to the spacecraft using
   each header's `ERTH2SC` vector — they then agree with detections to
   ~0.1-0.2 px. Magnitudes are predicted as W1 = V − 1.8 (rough: real
-  colours vary by a magnitude). `detect` labels matching detections and
-  lists the known objects it could have seen.
+  colours vary by a magnitude); in W3/W4 they're left blank (thermal
+  emission isn't predicted by V), and the catalogue isn't cut at V = 21
+  there (`--max-v`). Where SkyBoT's comet ephemerides don't cover an epoch
+  (early 2010) the query is repeated without comets. `detect` labels
+  matching detections and lists the known objects it could have seen.
 - **Empirical PSF** (`epsf.py`): effective PSF from ~300 stars per visit,
   4× oversampled. W1 FWHM ≈ 5.9", with wings the Gaussian model lacks.
 - **Injection** (`inject.py`): synthetic asteroids rendered with the visit's

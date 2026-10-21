@@ -60,7 +60,7 @@ def classify(doc: dict, catalog: Optional[dict]) -> dict:
     scale = doc["stats"]["pixel_scale_arcsec"]
     counts = {}
     for d in doc["detections"]:
-        for k in ("status", "near_known"):
+        for k in ("status", "near_known", "known", "known_id"):
             d.pop(k, None)
         if not d["detected"]:
             continue

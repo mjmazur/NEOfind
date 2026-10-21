@@ -32,18 +32,29 @@ from .query import http_get
 
 SKYBOT = "https://ssp.imcce.fr/webservices/skybot/api/conesearch.php"
 V_MINUS_W = {1: 1.8, 2: 1.9}  # sun V-W1 ~1.6, asteroids a little redder
+# W3/W4 (12/22 um) see an asteroid's own thermal emission, which reflected
+# light (V) doesn't predict: their magnitudes are left NaN (positions only).
 
 
 def skybot_cone(mjd_utc: float, ra: float, dec: float, radius_deg: float,
                 loc: str = "500") -> List[dict]:
     """Objects within ``radius_deg`` at the epoch, seen from the MPC
     observatory ``loc`` (default 500, the geocentre)."""
-    q = urllib.parse.urlencode({"-ep": f"{mjd_utc + 2400000.5:.7f}", "-ra": f"{ra:.6f}",
-                                "-dec": f"{dec:.6f}", "-rd": f"{radius_deg:.4f}",
-                                "-mime": "text", "-output": "all", "-loc": loc,
-                                "-objFilter": "111"})
-    text = http_get(f"{SKYBOT}?{q}", timeout=180.0).decode("utf-8", "replace")
-    return parse_skybot(text)
+    def query(obj_filter):
+        q = urllib.parse.urlencode({"-ep": f"{mjd_utc + 2400000.5:.7f}", "-ra": f"{ra:.6f}",
+                                    "-dec": f"{dec:.6f}", "-rd": f"{radius_deg:.4f}",
+                                    "-mime": "text", "-output": "all", "-loc": loc,
+                                    "-objFilter": obj_filter})
+        return parse_skybot(http_get(f"{SKYBOT}?{q}", timeout=180.0).decode("utf-8", "replace"))
+    try:
+        return query("111")  # asteroids, planets, comets
+    except RuntimeError as e:
+        # SkyBoT's comet ephemerides don't cover every epoch (early 2010:
+        # "comet conesearch -> Bad request: Epoch ... not available"), and
+        # then the whole query fails: retry without comets.
+        if "comet" not in str(e).lower():
+            raise
+        return query("110")
 
 
 def parse_skybot(text: str) -> List[dict]:
@@ -114,7 +125,7 @@ def known_objects(seq, center, radius_deg: float, band: int = 1, max_v: float = 
     ``ERTH2SC[XYZ]`` if present (WISE); a ground station passes its MPC
     code as ``loc`` and its band's V-minus colour as ``v_minus``."""
     log = log or (lambda *a: None)
-    vw = V_MINUS_W.get(band, 1.8) if v_minus is None else v_minus
+    vw = V_MINUS_W.get(band, math.nan) if v_minus is None else v_minus
     per_obj: Dict[str, dict] = {}
     with ThreadPoolExecutor(4) as ex:  # SkyBoT takes seconds per query
         results = list(ex.map(lambda fr: skybot_cone(fr.mjd, center[0], center[1], radius_deg, loc),
@@ -165,7 +176,10 @@ def known_objects(seq, center, radius_deg: float, band: int = 1, max_v: float = 
             "n_frames_in_frame": sum(p["in_frame"] for p in frames), "frames": frames,
         })
     asteroids.sort(key=lambda a: a["mag"] if math.isfinite(a["mag"]) else 99.0)
-    mag = f"predicted W{band} = V - {vw}" if v_minus is None else f"predicted V - {vw}"
+    if v_minus is None and not math.isfinite(vw):
+        mag = f"W{band}: thermal, not predicted"
+    else:
+        mag = f"predicted W{band} = V - {vw}" if v_minus is None else f"predicted V - {vw}"
     return {"source": source, "magnitude": mag, "asteroids": asteroids}
 
 

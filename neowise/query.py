@@ -34,6 +34,10 @@ TABLES = {
     "postcryo": "wise/postcryo/2band_p1bm_frm",
     "neowiser": "wise/neowiser/p1bm_frm",
 }
+# Default mission phases per band: NEOWISE-R for W1/W2; the 4-band
+# cryogenic survey (2010-01-07 .. 2010-08-06) is the only one with W4 and,
+# with the 3-band phase after it, the only one with W3.
+DEFAULT_TABLES = {1: ("neowiser",), 2: ("neowiser",), 3: ("allsky",), 4: ("allsky",)}
 ORBIT_DAYS = 94.8 / 1440.0
 USER_AGENT = "NEOfind/0.3 (moving-object search)"
 
