@@ -564,6 +564,20 @@ sweep.py, tests/
     (the 30 W1 calibration positions at their 2010 epoch, mirrored sweeps)
     is running. Also fixed: `review --skybot` searched around the first
     frame (a sliver at the edge here) and kept stale labels on reclassifying.
+  - W3/W4 calibration set (30 positions, 2010; sims/real_w3_*, real_w4_*):
+    W3 finds half of the catalogued asteroids at V 20 and some to V 22,
+    where W1 finds almost none fainter than V 17 (50% completeness off the
+    plane: W1 16.1, W3 11.1, W4 7.5 in each band's magnitudes). But the
+    held-out false rate was 0.107 (W3), 0.093 (W4) per copy vs 0.080 (W1)
+    on the same 25 uncrowded positions, and 53 of W3's 72 strongest
+    scrambled-copy candidates used images of catalogued asteroids:
+    scrambling destroys their motion but not their images. → catalogued
+    asteroids masked in scrambled copies (`nullcal.known_masks`, in
+    `detect`'s copy and `neowise scramble`); the W3/W4 null copies are
+    being redone with it. Dropping such candidates after the fact lowered
+    W3's short-track ratios (2.31 / 2.16 -> 1.74 / 1.46) but left a false
+    rate of 0.147: tracks of strong uncatalogued peaks in two dense fields
+    (v011/v012), to be identified next.
   - Per-frame tail calibration: tested offline, not adopted. Per frame
     of all 30 visits, the 1e-4 upper quantile of the SNR map on star-free
     sky relative to the visit median: 95th percentile 1.57, 99th 3.0.

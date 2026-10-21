@@ -170,10 +170,53 @@ def calibrate_ratios(visit_nulls: Dict[str, List[List[Tuple]]], target_far: floa
             "far_curve": {"ratio": grid.tolist(), "by_class": far}}
 
 
+# Catalogued asteroids masked in scrambled copies: radius in PSF FWHM, or
+# twice the ephemeris uncertainty if larger, up to MASK_MAX_PX pixels.
+# Scrambling destroys their motion but not their images, and chance
+# alignments of those images set the null tail where asteroids are dense:
+# in W3 (2010), 53 of the 72 strongest scrambled-copy candidates used at
+# least one catalogued asteroid's image (the top ones two of three frames).
+MASK_FWHM = 2.5
+MASK_MAX_PX = 15.0
+
+
+def known_masks(frames, known: Optional[dict]) -> List[np.ndarray]:
+    """Per frame (in time order, as ``known``'s per-frame positions), the
+    pixels within the mask radius of a catalogued object's position."""
+    from .io import default_psf_fwhm_arcsec
+    masks = [np.zeros(f.shape, bool) for f in frames]
+    if not known:
+        return masks
+    for k, f in enumerate(frames):
+        fwhm_px = default_psf_fwhm_arcsec(f) / f.pixel_scale_arcsec
+        h, w = f.shape
+        yy, xx = np.ogrid[:h, :w]
+        for a in known.get("asteroids", []):
+            fr = a["frames"][k] if k < len(a.get("frames", [])) else None
+            if not fr or not fr.get("in_frame") or fr.get("x") is None:
+                continue
+            err = a.get("err_arcsec")
+            r = MASK_FWHM * fwhm_px
+            if err is not None and err == err:
+                r = max(r, 2.0 * err / f.pixel_scale_arcsec)
+            r = min(r, MASK_MAX_PX)
+            x, y = fr["x"], fr["y"]
+            xa, xb = max(int(x - r), 0), min(int(x + r) + 2, w)
+            ya, yb = max(int(y - r), 0), min(int(y + r) + 2, h)
+            if xa < xb and ya < yb:
+                sub = (xx[:, xa:xb] - x) ** 2 + (yy[ya:yb] - y) ** 2 <= r * r
+                masks[k][ya:yb, xa:xb] |= sub
+    return masks
+
+
 def scrambled(seq, rng):
     """Copy of ``seq`` with the frame times permuted (frames re-sorted by
     their new times): nothing real moves linearly any more, while every
-    artifact and the static sky stay."""
+    artifact and the static sky stay. Catalogued asteroids (``seq.known``)
+    are masked first (``known_masks``)."""
+    masks = known_masks(seq.frames, seq.known)
+    seq = dataclasses.replace(seq, frames=[dataclasses.replace(f, bad=f.bad | m) if m.any() else f
+                                           for f, m in zip(seq.frames, masks)])
     times = seq.times
     perm = rng.permutation(len(times))
     while len(times) > 2 and np.all(perm == np.arange(len(times))):

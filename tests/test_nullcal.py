@@ -98,3 +98,23 @@ def test_real_wise_skips_crowded_fields_by_default():
     assert default_skip_crowded(SimpleNamespace(header=h))
     h["SIMULATD"] = True
     assert not default_skip_crowded(SimpleNamespace(header=h))
+
+
+def test_known_masks_cover_catalogued_asteroids():
+    from types import SimpleNamespace
+    frames = [SimpleNamespace(shape=(60, 80), pixel_scale_arcsec=2.75, psf_fwhm_arcsec=6.5, band="3")
+              for _ in range(2)]
+    known = {"asteroids": [
+        {"err_arcsec": 0.5, "frames": [{"in_frame": True, "x": 20.0, "y": 30.0},
+                                       {"in_frame": True, "x": 25.0, "y": 30.0}]},
+        {"err_arcsec": 60.0, "frames": [{"in_frame": False, "x": None, "y": None},
+                                        {"in_frame": True, "x": 60.0, "y": 10.0}]},
+    ]}
+    m = nullcal.known_masks(frames, known)
+    r = nullcal.MASK_FWHM * 6.5 / 2.75  # 5.9 px
+    assert m[0][30, 20] and m[0][30, int(20 + r - 0.5)] and not m[0][30, int(20 + r + 1.5)]
+    assert m[1][30, 25] and not m[1][30, 20 - 2]
+    # A poorly known orbit gets a wider mask, capped at MASK_MAX_PX.
+    assert m[1][10, 60 - 14] and not m[1][10, 60 - 17]
+    assert not m[0][10, 60]  # off the frame in frame 0
+    assert not any(x.any() for x in nullcal.known_masks(frames, None))

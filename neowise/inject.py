@@ -186,19 +186,25 @@ def inject_visit(visit_dir, out_dir, n: int = 20, mag_range=(13.5, 16.5), rate_r
 
 
 def scramble_visit(visit_dir, out_dir, seed: Optional[int] = None, log=None) -> Path:
-    """Copy of the visit with frame times randomly permuted (a null test)."""
+    """Copy of the visit with frame times randomly permuted (a null test),
+    catalogued asteroids (``known.json``) blanked (``nullcal.known_masks``)."""
     log = log or (lambda *a: None)
     visit_dir, out = Path(visit_dir), Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     seq = load_sequence(visit_dir)
     srcs = [Path(f.path) for f in seq.frames]
     times = seq.times
+    from neodetect.nullcal import known_masks
+    masks = known_masks(seq.frames, seq.known)  # catalogued asteroids, blanked
     rng = np.random.default_rng(seed)
     perm = rng.permutation(len(srcs))
     while len(srcs) > 2 and np.all(perm == np.arange(len(srcs))):
         perm = rng.permutation(len(srcs))
-    for src, t in zip(srcs, times[perm]):
+    for src, t, m in zip(srcs, times[perm], masks):
         data, header = read_image(src)
+        if m.any():
+            data = np.where(m, np.nan, data)
+            header["KNOWNMSK"] = (int(m.sum()), "px blanked around catalogued asteroids")
         header["MJD_OBS"] = (float(t), "SCRAMBLED observation time (null test)")
         for key in ("MJD-MID", "MJD-OBS"):
             header.remove(key, ignore_missing=True)
@@ -206,6 +212,7 @@ def scramble_visit(visit_dir, out_dir, seed: Optional[int] = None, log=None) -> 
         _write_int(src, out, data, header)
         _copy_companions(src, out)
     (out / "truth.json").write_text(json.dumps({"scrambled_from": str(visit_dir), "seed": seed,
+                                                "known_masked_px": int(sum(m.sum() for m in masks)),
                                                 "asteroids": []}, indent=1))
     log(f"scrambled {len(srcs)} frame times -> {out}")
     return out

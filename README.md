@@ -242,7 +242,11 @@ level × 1.80 / 1.38 / 1.25 for 3 / 4 / ≥ 5-frame tracks (`--null-ratio`),
 and the copy gives an **artifact veto**: a candidate within 60″ (at the
 reference time) of a scrambled-copy candidate scoring ≥ 1.2× the null
 level is rejected, as something that recurs whatever the frame order isn't
-moving.
+moving. Catalogued asteroids (`known.json`) are masked in the scrambled
+copy (2.5 PSF FWHM around each predicted position, or twice the ephemeris
+uncertainty, up to 15 px), as in `neowise scramble`: scrambling destroys
+their motion but not their images, and where asteroids are dense, as in
+W3, chance alignments of those images set the null tail.
 
 The false-alarm tail varies by ~2× across the sky: null levels are
 6.5–8 along the ecliptic and at high latitude, 9–12 in the Galactic plane
