@@ -22,6 +22,7 @@ astrometric/photometric accuracy.
 import json
 import math
 import os
+import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -145,6 +146,15 @@ def run_one(run_dir, cfg: DetectorConfig = None, force: bool = False,
     return doc
 
 
+def _all_cpus():
+    """Pool initializer: let the worker use every CPU."""
+    if hasattr(os, "sched_setaffinity"):
+        try:
+            os.sched_setaffinity(0, range(os.cpu_count() or 1))
+        except OSError:
+            pass
+
+
 def _run_one_job(args):
     run_dir, cfg_dict, force, name = args
     try:
@@ -163,11 +173,16 @@ def evaluate_sweep(sweep_dir, cfg: DetectorConfig = None, jobs: Optional[int] = 
     index = json.loads((sweep_dir / "index.json").read_text())
     runs = index["runs"]
     jobs = jobs or max(1, (os.cpu_count() or 2) // 8)
-    threads = max(1, (os.cpu_count() or 2) // jobs)
-    cfg = replace(cfg or DetectorConfig(), threads=threads)
+    cfg = cfg or DetectorConfig()
+    if not cfg.threads:  # unset: share the cores among the workers
+        cfg = replace(cfg, threads=max(1, (os.cpu_count() or 2) // jobs))
     todo = [(r["dir"], cfg.to_dict(), force, name) for r in runs]
     errors = []
-    with ProcessPoolExecutor(max_workers=jobs) as pool:
+    # Spawned, not forked, workers: a child forked after the parent has used
+    # MKL (Intel OpenMP) comes up pinned to CPUs 0-1, so 32 workers shared 2
+    # cores while 30 idled. _all_cpus resets the affinity in any case.
+    with ProcessPoolExecutor(max_workers=jobs, mp_context=multiprocessing.get_context("spawn"),
+                             initializer=_all_cpus) as pool:
         for i, (d, err) in enumerate(pool.map(_run_one_job, todo), 1):
             if err:
                 errors.append((d, err))
