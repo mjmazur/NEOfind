@@ -118,3 +118,17 @@ def test_known_masks_cover_catalogued_asteroids():
     assert m[1][10, 60 - 14] and not m[1][10, 60 - 17]
     assert not m[0][10, 60]  # off the frame in frame 0
     assert not any(x.any() for x in nullcal.known_masks(frames, None))
+
+
+def test_band_calibration_and_w3_floor():
+    from types import SimpleNamespace
+    from astropy.io import fits
+    from neodetect.io import REAL_WISE_CAL, band_calibration, default_thresholds
+    h = fits.Header({"TELESCOP": "WISE"})
+    f3, f4, f1 = (SimpleNamespace(header=h, band=b) for b in ("3", "4", None))
+    assert band_calibration(f3) is REAL_WISE_CAL["3"] and band_calibration(f1) is REAL_WISE_CAL["1"]
+    assert default_thresholds(f3) == REAL_WISE_CAL["3"]["fixed"] and default_thresholds(f4)[0] == 9.0
+    assert REAL_WISE_CAL["1"]["ratios"] == nullcal.NULL_RATIO
+    thr = nullcal.thresholds(7.0, REAL_WISE_CAL["3"]["ratios"], REAL_WISE_CAL["3"]["floor"])
+    assert thr["3"] == 20.0 and abs(thr["4"] - 7.0 * 1.64) < 1e-9
+    assert band_calibration(SimpleNamespace(header=fits.Header({"SIMULATD": True}), band="3")) is None

@@ -106,9 +106,12 @@ def null_level(scramble_scores: Seq[Seq[float]], rank: int = NULL_RANK,
     return max(float(np.median(vals)), min_level) if vals else float("nan")
 
 
-def thresholds(level: float, ratios: Optional[Dict[str, float]] = None) -> Dict[str, float]:
+def thresholds(level: float, ratios: Optional[Dict[str, float]] = None,
+               floor: Optional[Dict[str, float]] = None) -> Dict[str, float]:
+    """level x ratios per frame class, at least ``floor`` (``io.REAL_WISE_CAL``)."""
     ratios = ratios or NULL_RATIO
-    return {c: float(level * ratios[c]) for c in FRAME_CLASSES}
+    floor = floor or {}
+    return {c: float(max(level * ratios[c], floor.get(c, 0.0))) for c in FRAME_CLASSES}
 
 
 def passes(score: float, n_used: int, thr: Dict[str, float]) -> bool:
@@ -235,7 +238,8 @@ def guard_thresholds(level: float, base: Dict[str, float],
 
 def self_calibrate(seq, cfg=None, n: int = 1, seed: int = 0, ratios=None,
                    rank: int = NULL_RANK, log=None, mode: str = "per-visit",
-                   base: Optional[Dict[str, float]] = None) -> dict:
+                   base: Optional[Dict[str, float]] = None,
+                   floor: Optional[Dict[str, float]] = None) -> dict:
     """Run the detector on ``n`` time-scrambled copies of ``seq``: the null
     level, artifact veto sites and thresholds -- per-visit (level x ratios)
     or, in ``guard`` mode, ``base`` raised for an unusually noisy visit."""
@@ -254,7 +258,7 @@ def self_calibrate(seq, cfg=None, n: int = 1, seed: int = 0, ratios=None,
             raise ValueError("guard mode needs base thresholds")
         thr = guard_thresholds(level, base)
     elif mode == "per-visit":
-        thr = thresholds(level, ratios)
+        thr = thresholds(level, ratios, floor)
     else:
         raise ValueError(f"unknown null mode {mode!r}")
     sites = veto_sites(copies, level)
@@ -264,6 +268,7 @@ def self_calibrate(seq, cfg=None, n: int = 1, seed: int = 0, ratios=None,
     return {"n_copies": n, "seed": seed, "rank": rank, "level": level, "mode": mode,
             "guard_level": GUARD_LEVEL if mode == "guard" else None,
             "ratios": dict(ratios or NULL_RATIO) if mode == "per-visit" else None,
+            "floor": dict(floor or {}),
             "thresholds": thr,
             "veto_sites": sites.tolist(),
             "copy_top_scores": [sorted((c[0] for c in cp), reverse=True)[:rank] for cp in copies]}

@@ -152,12 +152,15 @@ def cmd_detect(args) -> int:
         n_null = default_null_scrambles(seq.frames[0])
     if n_null and not doc["stats"].get("skipped"):
         from . import nullcal
-        ratios = dict(zip(nullcal.FRAME_CLASSES, args.null_ratio)) if args.null_ratio else None
+        from .io import band_calibration
+        band_cal = band_calibration(seq.frames[0]) or {}
+        ratios = (dict(zip(nullcal.FRAME_CLASSES, args.null_ratio)) if args.null_ratio
+                  else band_cal.get("ratios"))
         mode = args.null_mode or "per-visit"
         c = doc["config"]  # thresholds as resolved for this instrument
         base = {"3": c["detect_threshold_3"], "4": c["detect_threshold_4"], "5+": c["detect_threshold"]}
         cal = nullcal.self_calibrate(seq, cfg, n=n_null, ratios=ratios, log=log, mode=mode,
-                                     base=base)
+                                     base=base, floor=band_cal.get("floor"))
         nullcal.apply(doc["detections"], cal["thresholds"], cal["veto_sites"])
         doc["null_calibration"] = cal
     doc["frames"] = [{"path": f.path, "mjd": f.mjd} for f in seq.frames]

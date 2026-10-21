@@ -578,7 +578,19 @@ sweep.py, tests/
     being redone with it. Dropping such candidates after the fact lowered
     W3's short-track ratios (2.31 / 2.16 -> 1.74 / 1.46) but left a false
     rate of 0.147: tracks of strong uncatalogued peaks in two dense fields
-    (v011/v012), to be identified next.
+    (v011/v012), to be identified next. With masked null copies: W4 0.067
+    false per copy (ratios 1.32 / 1.27 / 1.24), W3 0.133 (1.67 / 1.44 /
+    1.19). The 20 strongest W3 transient peaks: single-frame, star-shaped
+    (diffraction cross), clustered in a few exposures (7, 4, 4 of 20);
+    not latents (2/20 with a bright source at the same detector pixel 1-3
+    exposures earlier vs 3/200 random pixels), not star residuals, not
+    catalogued asteroids (nearest 24"-4'), not parts of found movers; no
+    SAA / Moon / quality-flag link. They chain into 3-frame tracks up to
+    ~21. → 3-frame W3 tracks need >= 20: held out 0.067 per copy, bright
+    fast movers kept (W3 8.5-9: 1.00 / 0.99; >= 4 frames instead: 0.84),
+    50% limit 11.12. Per-band calibration in `io.REAL_WISE_CAL` (ratios,
+    fixed thresholds, floors) used by `detect`; W3 test visit (Oceana
+    field): all 13 catalogued asteroids still found, no false tracks.
   - Per-frame tail calibration: tested offline, not adopted. Per frame
     of all 30 visits, the 1e-4 upper quantile of the SNR map on star-free
     sky relative to the visit median: 95th percentile 1.57, 99th 3.0.

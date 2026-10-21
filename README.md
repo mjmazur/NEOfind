@@ -285,6 +285,28 @@ search then stops (12 s on a bulge visit, instead of 1.5–3.5 h per run),
 with no candidates and no null calibration; `--no-skip-crowded` searches
 anyway, and `--skip-crowded` turns skipping on for other instruments.
 
+**W3/W4 calibration** (`io.REAL_WISE_CAL`, per band: per-visit ratios,
+fixed thresholds, minimum thresholds). Calibrated like W1 on the 2010
+cryogenic visits of the same 30 positions (`sims/real_w3_*`,
+`real_w4_*`), catalogued asteroids masked in the null copies, 25
+uncrowded visits, held out one at a time:
+
+| band | ratios 3 / 4 / ≥ 5 | fixed (no copies) | false per copy | 50% completeness, off / in plane |
+|---|---|---|---|---|
+| W1 (NEOWISE) | 1.80 / 1.38 / 1.25 | 9.75 / 9.25 / 9.25 | 0.080* | 16.1 / 15.7 |
+| W3 (2010) | 1.67 / 1.64 / 1.24, 3-frame ≥ 20 | 20 / 8.75 / 8.25 | 0.067 | 11.1 / 10.7 |
+| W4 (2010) | 1.32 / 1.27 / 1.24 | 9.0 / 8.5 / 8.25 | 0.067 | 7.6 / 7.4 |
+
+(*W1 on these 25 positions; 0.067 on all 30.) In W3, a few exposures in
+dense fields carry single-frame, star-shaped transients -- not latents
+(2 of 20 had a bright source at the same detector pixel 1-3 exposures
+earlier, vs 3 of 200 random pixels), not star residuals, not catalogued
+asteroids, not parts of found movers -- which chain into 3-frame tracks
+scoring up to ~21; 3-frame W3 tracks therefore need ≥ 20 (0.133 false per
+copy without it, and requiring 4 frames instead lost bright fast movers).
+W3 finds half the catalogued asteroids at V 20 and some to V 22; W1 almost
+none fainter than V 17. W2 uses W1's values (not calibrated).
+
 **Reporting** (`report.py`): `--ades FILE` writes ADES PSV for the MPC,
 one row per frame a detection uses: the track position at that frame's
 time, uncertainties from the centroid error plus a 0.25" floor, and the

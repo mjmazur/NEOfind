@@ -182,6 +182,33 @@ def default_skip_crowded(frame: "Frame") -> bool:
 # and bulge fields need the per-visit thresholds (nullcal), the default.
 REAL_WISE_THRESHOLDS = (9.75, 9.25, 9.25)
 
+# Real WISE calibration per band: per-visit ratios (threshold / null level
+# for 3 / 4 / >= 5-frame tracks), fixed thresholds without scrambled copies,
+# and minimum thresholds. W1: NEOWISE, sims/real_v1 + real_v3 (M4m). W2:
+# not calibrated, W1's. W3/W4: the 2010 cryogenic visits of the same 30
+# positions (sims/real_w3_*, real_w4_*), catalogued asteroids masked in the
+# null copies, fitted on the 25 uncrowded ones; fixed thresholds from the
+# quiet ones (null level <= 7.5: 18 in W3, all 25 in W4). In W3 a few
+# exposures in dense fields carry single-frame, star-like transients
+# (neither latents, star residuals nor catalogued asteroids) that chain into
+# 3-frame tracks up to ~21: 3-frame W3 tracks need >= 20. Held out one visit
+# at a time: false 0.067 per copy in W3 (0.133 without the minimum) and W4,
+# 50% completeness off the plane at W3 11.1, W4 7.6 (W1 16.1).
+REAL_WISE_CAL = {
+    "1": {"ratios": {"3": 1.80, "4": 1.38, "5+": 1.25}, "fixed": REAL_WISE_THRESHOLDS, "floor": {}},
+    "2": {"ratios": {"3": 1.80, "4": 1.38, "5+": 1.25}, "fixed": REAL_WISE_THRESHOLDS, "floor": {}},
+    "3": {"ratios": {"3": 1.67, "4": 1.64, "5+": 1.24}, "fixed": (20.0, 8.75, 8.25), "floor": {"3": 20.0}},
+    "4": {"ratios": {"3": 1.32, "4": 1.27, "5+": 1.24}, "fixed": (9.0, 8.5, 8.25), "floor": {}},
+}
+
+
+def band_calibration(frame: "Frame") -> Optional[dict]:
+    """``REAL_WISE_CAL`` entry for a real WISE frame's band (W1 if unknown), else None."""
+    if not _is_real_wise(frame.header):
+        return None
+    band = str(getattr(frame, "band", None) or "1").upper().lstrip("W")
+    return REAL_WISE_CAL.get(band, REAL_WISE_CAL["1"])
+
 
 # The simulator's ``ground`` preset (sims/sweeps/ground_v1: 24 null runs,
 # 0 false per run). Its frames are close in time, so fast chance alignments
@@ -192,8 +219,9 @@ GROUND_SIM_THRESHOLDS = (11.75, 11.5, 9.75)
 def default_thresholds(frame: "Frame"):
     """(3, 4, >= 5-frame) detection thresholds for this instrument, or None
     for ``DetectorConfig``'s (simulated WISE) defaults."""
-    if _is_real_wise(frame.header):
-        return REAL_WISE_THRESHOLDS
+    cal = band_calibration(frame)
+    if cal is not None:
+        return cal["fixed"]
     h = frame.header
     if h.get("SIMULATD") and str(h.get("INSTRUME", "")).strip().lower() == "ground":
         return GROUND_SIM_THRESHOLDS
