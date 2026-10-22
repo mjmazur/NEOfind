@@ -72,6 +72,9 @@ class Sequence:
     metadata: Optional[dict] = None
     source: Optional[str] = None
     known: Optional[dict] = None  # known.json from neowise: real objects, truth format
+    # The same exposures in another band (W4 for W3), searched jointly
+    # (``detector.attach_companion``); frames in the same (time) order.
+    companion: Optional["Sequence"] = None
 
     @property
     def n_frames(self) -> int:
@@ -197,17 +200,33 @@ REAL_WISE_THRESHOLDS = (9.75, 9.25, 9.25)
 REAL_WISE_CAL = {
     "1": {"ratios": {"3": 1.80, "4": 1.38, "5+": 1.25}, "fixed": REAL_WISE_THRESHOLDS, "floor": {}},
     "2": {"ratios": {"3": 1.80, "4": 1.38, "5+": 1.25}, "fixed": REAL_WISE_THRESHOLDS, "floor": {}},
-    "3": {"ratios": {"3": 1.67, "4": 1.64, "5+": 1.24}, "fixed": (20.0, 8.75, 8.25), "floor": {"3": 20.0}},
+    # W3 searched jointly with its W4 twin (``joint``: W4/W3 flux ratio in
+    # grid units, median of 217 catalogued asteroids, 90% within 0.39-0.78),
+    # 3-frame tracks below the minimum needing W4 confirmation (``confirm``).
+    # Held out over the 25 uncrowded visits: 0.080 false per copy (W3 alone,
+    # "single": 0.067), 50% completeness 11.18 off / 10.81 in the plane
+    # (11.12 / 10.66), catalogued asteroids found at V 20 / 21 / 22 57 / 54 /
+    # 52 (52 / 48 / 42). "single" applies when no companion visit matches.
+    "3": {"ratios": {"3": 1.21, "4": 1.30, "5+": 1.19}, "fixed": (20.0, 9.25, 8.5), "floor": {"3": 20.0},
+          "joint": {"band": "4", "ratio": 0.56},
+          "confirm": {"band": "4", "min_score": 3.0, "fixed_3": 9.0},
+          "single": {"ratios": {"3": 1.67, "4": 1.64, "5+": 1.24}, "fixed": (20.0, 8.75, 8.25),
+                     "confirm": {"band": "4", "min_score": 3.0, "fixed_3": 11.75}}},
     "4": {"ratios": {"3": 1.32, "4": 1.27, "5+": 1.24}, "fixed": (9.0, 8.5, 8.25), "floor": {}},
 }
 
 
-def band_calibration(frame: "Frame") -> Optional[dict]:
-    """``REAL_WISE_CAL`` entry for a real WISE frame's band (W1 if unknown), else None."""
+def band_calibration(frame: "Frame", joint: Optional[bool] = None) -> Optional[dict]:
+    """``REAL_WISE_CAL`` entry for a real WISE frame's band (W1 if unknown),
+    else None; ``joint=False`` gives the single-band values where the band
+    is calibrated for a joint search (``"single"``)."""
     if not _is_real_wise(frame.header):
         return None
     band = str(getattr(frame, "band", None) or "1").upper().lstrip("W")
-    return REAL_WISE_CAL.get(band, REAL_WISE_CAL["1"])
+    cal = REAL_WISE_CAL.get(band, REAL_WISE_CAL["1"])
+    if joint is False and "single" in cal:
+        cal = {**{k: v for k, v in cal.items() if k not in ("single", "joint")}, **cal["single"]}
+    return cal
 
 
 # The simulator's ``ground`` preset (sims/sweeps/ground_v1: 24 null runs,

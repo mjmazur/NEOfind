@@ -226,9 +226,16 @@ def available():
     return names
 
 
-def get_stack_max(name: str = "auto", threads: int = 0):
+def resolve(name: str = "auto") -> str:
+    """The backend ``name`` stands for: ``auto`` is cupy on a GPU that passes
+    its self-test, else numba, else numpy."""
     if name == "auto":
-        name = "cupy" if cupy_ok() else ("numba" if HAVE_NUMBA else "numpy")
+        return "cupy" if cupy_ok() else ("numba" if HAVE_NUMBA else "numpy")
+    return name
+
+
+def get_stack_max(name: str = "auto", threads: int = 0):
+    name = resolve(name)
     if name == "cupy":
         if not HAVE_CUPY:
             raise ValueError("cupy backend requested but CuPy or an NVIDIA GPU is not available")

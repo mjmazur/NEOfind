@@ -458,3 +458,32 @@ def test_extendedness_separates_points_from_blobs():
     blob = _extendedness(r, pre_with(3 * sig), times, cfg.extended_k)
     assert abs(point - 1.6) < 0.1  # 2k^2 / (1 + k^2)
     assert blob > 2.8 > cfg.extended_max > point
+
+
+def test_stack_rate_default_follows_the_backend(monkeypatch):
+    from neodetect import backend, detector
+    from neodetect.detector import DetectorConfig, resolved_stack_rate_max
+    assert DetectorConfig().stack_rate_max is None
+    monkeypatch.setattr(backend, "resolve", lambda name: "cupy")
+    assert resolved_stack_rate_max(DetectorConfig()) == detector.GPU_STACK_RATE_MAX == 3.0
+    monkeypatch.setattr(backend, "resolve", lambda name: "numba")
+    assert resolved_stack_rate_max(DetectorConfig()) == detector.CPU_STACK_RATE_MAX == 0.25
+    assert resolved_stack_rate_max(DetectorConfig(stack_rate_max=1.0)) == 1.0  # explicit wins
+
+
+def test_attach_companion_matches_exposures(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from astropy.io import fits
+    from neodetect import detector, confirm, io
+    from neodetect.detector import DetectorConfig, attach_companion
+    hdr = fits.Header({"TELESCOP": "WISE"})
+    fr = lambda t, band: SimpleNamespace(mjd=t, band=band, header=hdr)
+    seq = io.Sequence(frames=[fr(t, "3") for t in (1.0, 2.0, 3.0)], source=str(tmp_path / "x_w3" / "d"))
+    comp = io.Sequence(frames=[fr(t, "4") for t in (0.5, 1.0, 2.0, 3.0)])  # one extra exposure
+    monkeypatch.setattr(confirm, "companion_dir", lambda src, band: tmp_path)
+    monkeypatch.setattr(io, "load_sequence", lambda d: comp)
+    got = attach_companion(seq, DetectorConfig())
+    assert got is not None and [f.mjd for f in got[0].frames] == [1.0, 2.0, 3.0] and got[1] == 0.56
+    seq2 = io.Sequence(frames=[fr(t, "3") for t in (1.0, 2.0, 4.0)], source=str(tmp_path / "x_w3" / "d"))
+    assert attach_companion(seq2, DetectorConfig()) is None  # a W3 exposure without W4
+    assert attach_companion(io.Sequence(frames=seq.frames, source=seq.source), DetectorConfig(joint_band="")) is None

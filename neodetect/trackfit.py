@@ -156,8 +156,13 @@ def robust_combine(num, den, clip: float = 4.0, frac_tol: float = 0.35,
 
 class TrackEvaluator:
     def __init__(self, pre: Preprocessed, clip: float = 4.0, frac_tol: float = 0.35,
-                 min_frames: int = 3):
+                 min_frames: int = 3, companions=None):
+        """``companions``: [(Preprocessed, c)] -- other bands of the same
+        exposures on the same grid, whose exact sums are added with weights
+        c (num) and c^2 (den): a joint matched filter for a source c times
+        as bright there (``pre``'s psi/phi should be the joint maps)."""
         self.pre = pre
+        self.companions = list(companions or [])
         self.n = pre.n
         self.shape = pre.resid.shape[1:]
         self.times = pre.times
@@ -179,6 +184,17 @@ class TrackEvaluator:
                 continue
             num[k] = float((w * self.pre.resid[k, a:b, c:d] * t).sum())
             den[k] = float((w * t2).sum())
+            for cp, f in self.companions:
+                st2, r2, c2 = stamp(xs[k], ys[k], cp.psf_sigma_px[k])
+                cl = clip_stamp(st2, r2, c2, self.shape)
+                if cl is None:
+                    continue
+                u, (a2, b2, c3, d2) = cl
+                w2 = cp.weight[k, a2:b2, c3:d2]
+                if float((u * u * (w2 > 0)).sum()) < MIN_PSF_COVERAGE * float((st2 * st2).sum()):
+                    continue
+                num[k] += f * float((w2 * cp.resid[k, a2:b2, c3:d2] * u).sum())
+                den[k] += f * f * float((w2 * u * u).sum())
         return num, den
 
     def frame_coverage(self, track: Track) -> np.ndarray:

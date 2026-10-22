@@ -325,7 +325,8 @@ def write_sheet(frames, doc: dict, i: int, path, half: int = 12, zoom: int = 4,
         tag += f" ({d['known']})"
     dr.text((4, 2), f"#{i}  score {d['score']:.1f}  {d['n_frames_used']}/{d['n_frames_covered']} frames  "
                     f"{d['rate_deg_day']:.3f} deg/day  PA {d['pa_deg']:.0f}  {mag}", fill=(255, 255, 255))
-    dr.text((4, 15), f"RA {d['ra_deg']:.5f}  Dec {d['dec_deg']:+.5f}  {tag}", fill=(200, 200, 200))
+    conf = (f"  {d['confirm_band']} {d['confirm_score']:.1f}" if d.get("confirm_score") is not None else "")
+    dr.text((4, 15), f"RA {d['ra_deg']:.5f}  Dec {d['dec_deg']:+.5f}  {tag}{conf}", fill=(200, 200, 200))
 
     def panel(n, label, img, diff, s, border=None):
         r, c = divmod(n, max_cols)

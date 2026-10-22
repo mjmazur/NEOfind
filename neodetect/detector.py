@@ -22,6 +22,10 @@ from .photometry import aperture_correction
 from .trackfit import Track, TrackEvaluator, TrackScore, robust_combine
 
 
+CPU_STACK_RATE_MAX = 0.25  # deg/day
+GPU_STACK_RATE_MAX = 3.0
+
+
 @dataclass
 class DetectorConfig:
     # Sky region (ra_deg, dec_deg, size_deg) to search; None = union of frames.
@@ -39,7 +43,12 @@ class DetectorConfig:
     # Shift-and-stack path (the expensive one; rates in deg/day).
     stack: bool = True
     stack_rate_min: float = 0.0
-    stack_rate_max: float = 0.25
+    # None: the backend's default -- GPU_STACK_RATE_MAX on the CuPy (GPU)
+    # backend, CPU_STACK_RATE_MAX otherwise. The grid grows with the square
+    # of the rate (3 deg/day: ~150x the velocities of 0.25), which only a GPU
+    # makes routine; faster movers are otherwise found by linking alone,
+    # which needs a >= peak_threshold peak in >= 3 frames.
+    stack_rate_max: Optional[float] = None
     stack_threshold: float = 6.0
     stack_zclip: float = 4.0
     stack_step_px: float = 1.0
@@ -99,6 +108,12 @@ class DetectorConfig:
     # completeness collapsed. 0 = off. skip_crowded None = the instrument's
     # default (``io.default_skip_crowded``: on for real WISE, where a
     # crowded visit took 1.5-3.5 h per run and found almost nothing).
+    # Joint matched filter with a companion band of the same exposures
+    # (``attach_companion``): "auto" = the instrument's (W4 for real W3,
+    # ``io.REAL_WISE_CAL``), "" = off, or a band ("4"); joint_ratio overrides
+    # the companion/primary flux ratio c (grid units).
+    joint_band: str = "auto"
+    joint_ratio: Optional[float] = None
     crowded_frac: float = 0.45
     skip_crowded: Optional[bool] = None
     # Reject extended tracks: the frame-combined flux fitted with a Gaussian
@@ -230,6 +245,45 @@ class DetectionResult:
 
     def to_dict(self):
         return {"config": self.config, "stats": self.stats, "detections": self.detections}
+
+
+def attach_companion(seq: Sequence, cfg: "DetectorConfig", log=None):
+    """Set ``seq.companion`` (the same exposures in the joint band) if the
+    joint filter applies and it isn't set; returns (companion, c) or None."""
+    from .io import band_calibration
+    log = log or (lambda *a: None)
+    rule = (band_calibration(seq.frames[0]) or {}).get("joint") if seq.frames else None
+    band = rule["band"] if cfg.joint_band == "auto" and rule else (cfg.joint_band or None)
+    if band in (None, "auto") or band == "":
+        return None
+    ratio = cfg.joint_ratio if cfg.joint_ratio is not None else (rule or {}).get("ratio")
+    if ratio is None:
+        return None
+    if seq.companion is None and seq.source:
+        from .confirm import companion_dir
+        from .io import load_sequence
+        d = companion_dir(seq.source, str(band))
+        if d is None:
+            log(f"joint W{band}: no companion visit for {seq.source}")
+            return None
+        comp = load_sequence(str(d))
+        # The same exposures: keep the companion's frames at this band's times
+        # (a separately fetched visit can hold an extra exposure).
+        keep = [f for f in comp.frames if np.min(np.abs(seq.times - f.mjd)) < 1e-5]
+        if len(keep) != seq.n_frames:
+            log(f"joint W{band}: {d} lacks {seq.n_frames - len(keep)} of this band's exposures; single band")
+            return None
+        from dataclasses import replace as _replace
+        seq.companion = _replace(comp, frames=keep)
+    return (seq.companion, float(ratio)) if seq.companion is not None else None
+
+
+def resolved_stack_rate_max(cfg: "DetectorConfig") -> float:
+    """``cfg.stack_rate_max``, or the backend's default when None."""
+    if cfg.stack_rate_max is not None:
+        return cfg.stack_rate_max
+    from .backend import resolve
+    return GPU_STACK_RATE_MAX if resolve(cfg.backend) == "cupy" else CPU_STACK_RATE_MAX
 
 
 def deg_day_to_px(rate_deg_day: float, scale_arcsec: float) -> float:
@@ -410,6 +464,24 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
 
     t = time.time()
     pre = preprocess(reg, log=log, local_noise_px=cfg.local_noise_px)
+    pre_band = pre  # this band alone: photometry
+    companions, stats_joint = [], None
+    comp = attach_companion(seq, cfg, log)
+    if comp is not None:
+        cseq, c = comp
+        reg_c = register(cseq, ref=cfg.ref_frame, region=cfg.region, second_pass=cfg.sharp_second_pass,
+                         streaks=cfg.mask_streaks, grid=reg.wcs)
+        pre_c = preprocess(reg_c, local_noise_px=cfg.local_noise_px)
+        pre = replace(pre, psi=pre.psi + c * pre_c.psi, phi=pre.phi + c * c * pre_c.phi)
+        companions = [(pre_c, c)]
+        stats_joint = {"band": f"W{cseq.frames[0].band}", "ratio": c}
+        log(f"joint matched filter with {stats_joint['band']}: c = {c}")
+    elif cfg.instrument_thresholds and seq.frames:  # no companion: the single-band calibration
+        from .io import band_calibration
+        single = band_calibration(seq.frames[0], joint=False)
+        if single is not None and single.get("fixed"):
+            t3, t4, t5 = single["fixed"]
+            cfg = replace(cfg, detect_threshold_3=t3, detect_threshold_4=t4, detect_threshold=t5)
     timing["preprocess_s"] = time.time() - t
 
     apc = {"apcorr": 1.0}
@@ -442,7 +514,7 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
                                            "candidates are unreliable, completeness low"))
         if cfg.skip_crowded:
             stats.update(skipped="crowded", timing=timing)
-            evaluator = TrackEvaluator(pre, clip=cfg.clip_sigma, frac_tol=cfg.frac_tol,
+            evaluator = TrackEvaluator(pre, companions=companions, clip=cfg.clip_sigma, frac_tol=cfg.frac_tol,
                                        min_frames=cfg.min_frames)
             return DetectionResult(detections=[], config=cfg.to_dict(), stats=stats, reg=reg,
                                    pre=pre, evaluator=evaluator, t_ref=t_ref)
@@ -464,8 +536,10 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
 
     if cfg.stack:
         t = time.time()
+        rate_max = resolved_stack_rate_max(cfg)
+        stats["stack_rate_max"] = rate_max
         sc = shift_and_stack(pre, t_ref, max(deg_day_to_px(cfg.stack_rate_min, scale), v_stationary),
-                             deg_day_to_px(cfg.stack_rate_max, scale), cfg.stack_threshold,
+                             deg_day_to_px(rate_max, scale), cfg.stack_threshold,
                              zclip=cfg.stack_zclip, step_px=cfg.stack_step_px,
                              min_frames=cfg.min_frames, backend=cfg.backend,
                              threads=cfg.threads, log=log)
@@ -475,7 +549,7 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
 
     # Triage every seed with the fast bilinear approximation.
     t = time.time()
-    evaluator = TrackEvaluator(pre, clip=cfg.clip_sigma, frac_tol=cfg.frac_tol,
+    evaluator = TrackEvaluator(pre, companions=companions, clip=cfg.clip_sigma, frac_tol=cfg.frac_tol,
                                min_frames=cfg.min_frames)
     chosen: List[Track] = []
     if seeds:
@@ -589,7 +663,13 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
     offsets = [tuple(cfg.centroid_offset) if cfg.centroid_offset is not None
                else default_centroid_offset(f) for f in seq.frames]
     stats["centroid_offset_px"] = [list(o) for o in offsets]
-    detections = [to_detection(r, reg, pre, cfg, apc["apcorr"], offsets) for r in final]
+    if companions:  # magnitudes from this band alone (the joint flux assumes the colour c)
+        ev_band = TrackEvaluator(pre_band, clip=cfg.clip_sigma, frac_tol=cfg.frac_tol, min_frames=1)
+        phot = [ev_band.score(r.track, used=r.used) for r in final]
+        stats["joint"] = stats_joint
+    else:
+        phot = [None] * len(final)
+    detections = [to_detection(r, reg, pre, cfg, apc["apcorr"], offsets, phot=p) for r, p in zip(final, phot)]
     return DetectionResult(detections=detections, config=cfg.to_dict(), stats=stats,
                            reg=reg, pre=pre, evaluator=evaluator, t_ref=t_ref)
 
@@ -615,7 +695,7 @@ def _release_shared_frames(r: TrackScore, accepted: List[TrackScore], evaluator:
 
 
 def to_detection(r: TrackScore, reg: Registered, pre: Preprocessed,
-                 cfg: DetectorConfig, apcorr: float = 1.0, offsets=None) -> dict:
+                 cfg: DetectorConfig, apcorr: float = 1.0, offsets=None, phot=None) -> dict:
     """Detection record; fluxes are scaled to total flux by ``apcorr``, and
     each frame's position moved by ``-offsets[k]`` native px (the centroid
     convention; the reference position by their mean sky shift)."""
@@ -639,7 +719,7 @@ def to_detection(r: TrackScore, reg: Registered, pre: Preprocessed,
     c2 = SkyCoord(rab * u.deg, decb * u.deg)
     rate = float(c1.separation(c2).deg) / (2 * dt)
     pa = float(c1.position_angle(c2).deg)
-    flux = r.flux * apcorr
+    flux = (phot.flux if phot is not None else r.flux) * apcorr
     mag = reg.magzp - 2.5 * math.log10(flux) if (reg.magzp is not None and flux > 0) else None
     frames = []
     z, ff, fe = r.z, r.frame_flux * apcorr, r.frame_flux_err * apcorr

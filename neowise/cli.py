@@ -1,4 +1,4 @@
-"""Command-line interface: ``python -m neowise {visits,fetch,known,inject}``.
+"""Command-line interface: ``python -m neowise {visits,fetch,known,inject,scramble,sweep,survey}``.
 
     python -m neowise visits 150.0 2.0                  # list visits covering a position
     python -m neowise fetch 150.0 2.0 --visit 3         # download that visit (0.5 deg cutouts)
@@ -142,6 +142,19 @@ def cmd_sweep(a):
     return 0
 
 
+def cmd_survey(a):
+    from .survey import Survey, ecliptic_fields
+    if a.fields:
+        fields = [tuple(float(x) for x in line.split()[:2]) for line in Path(a.fields).read_text().splitlines()
+                  if line.strip() and not line.startswith("#")]
+    else:
+        fields = ecliptic_fields(a.lon_step, [float(x) for x in a.lats.split(",")])
+    if a.limit:
+        fields = fields[:a.limit]
+    Survey(a.output, band=a.band, size=a.size, jobs=a.jobs, threads=a.threads, log=_log).run(fields)
+    return 0
+
+
 def _range(s):
     lo, hi = (float(x) for x in s.split(":"))
     return lo, hi
@@ -212,6 +225,19 @@ def main(argv=None) -> int:
     q.add_argument("--rates", type=_range, default=(0.05, 3.0), help="deg/day (default 0.05:3)")
     q.add_argument("--seed", type=int, default=None)
     q.set_defaults(func=cmd_sweep)
+
+    q = sub.add_parser("survey", help="fetch, search and review many visits (resumable)")
+    q.add_argument("output", help="survey directory (state in survey.json, suspects.txt)")
+    q.add_argument("--band", type=int, default=3, choices=(1, 2, 3, 4),
+                   help="band (default 3: W3, 2010; W4 twins are fetched to confirm short tracks)")
+    q.add_argument("--fields", help="file of 'ra dec' lines (default: an ecliptic grid)")
+    q.add_argument("--lon-step", type=float, default=3.0, help="ecliptic grid step, deg (default 3)")
+    q.add_argument("--lats", default="0", help="ecliptic latitudes, comma-separated (default 0)")
+    q.add_argument("--size", type=float, default=0.6, help="cutout side, deg (default 0.6)")
+    q.add_argument("--jobs", type=int, default=4, help="searches at a time (default 4)")
+    q.add_argument("--threads", type=int, default=8, help="threads per search (default 8)")
+    q.add_argument("--limit", type=int, default=None, help="only the first N fields")
+    q.set_defaults(func=cmd_survey)
 
     a = p.parse_args(argv)
     return a.func(a)

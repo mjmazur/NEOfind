@@ -185,6 +185,79 @@ def inject_visit(visit_dir, out_dir, n: int = 20, mag_range=(13.5, 16.5), rate_r
     return out
 
 
+def inject_companion(visit_dir, out_dir, truth_path, ratio_median: float, ratio_sigma_ln: float,
+                     seed: Optional[int] = None, log=None) -> Path:
+    """Copy a companion-band visit (e.g. W4 of a W3 visit: the same
+    exposures) with the synthetic asteroids of another band's injected copy
+    (``truth_path``) at the same per-exposure positions. Each asteroid's flux
+    in grid units (the visit's reference zero point) is its flux in the other
+    band times a ratio drawn log-normally (``ratio_median``, ``ratio_sigma_ln``):
+    a realistic colour, so the two copies can be searched jointly."""
+    log = log or (lambda *a: None)
+    visit_dir, out = Path(visit_dir), Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    seq = load_sequence(visit_dir)
+    psf = visit_epsf(visit_dir, seq, log)
+    src = json.loads(Path(truth_path).read_text())
+    src_zp = src.get("magzp_ref")
+    if src_zp is None:  # the other band's reference zero point, from its visit
+        src_seq = load_sequence(src["source_visit"])
+        src_zp = float(np.median([f.magzp for f in src_seq.frames]))
+    zp = float(np.median([f.magzp for f in seq.frames]))
+    rng = np.random.default_rng(seed)
+    asts = [a for a in src["asteroids"] if not a.get("real")]
+    times = np.array([f.mjd for f in seq.frames])
+    truth = {k: src[k] for k in ("target_ra_deg", "target_dec_deg", "t_ref_mjd") if k in src}
+    truth.update({"source_visit": str(visit_dir), "seed": seed, "companion_of": str(truth_path),
+                  "ratio_median": ratio_median, "ratio_sigma_ln": ratio_sigma_ln,
+                  "psf": {"kind": "empirical ePSF", "fwhm_px": psf.fwhm_px(), "n_stars": psf.n_stars},
+                  "pixel_convention": "0-based, pixel centers at integers (astropy origin=0)",
+                  "centroid_offset_px": list(default_centroid_offset(seq.frames[0])), "asteroids": []})
+    offset = default_centroid_offset(seq.frames[0])
+    mags = {}
+    for a in asts:
+        ratio = ratio_median * math.exp(rng.normal(0.0, ratio_sigma_ln))
+        mags[a["id"]] = a["mag"] - src_zp + zp - 2.5 * math.log10(ratio)
+    per = {a["id"]: [] for a in asts}
+    for k, f in enumerate(seq.frames):
+        raw, header = read_image(Path(f.path))
+        raw = raw.astype(np.float64)
+        h, w = f.shape
+        for a in asts:
+            pf = min(a["frames"], key=lambda p: abs(p["mjd"] - f.mjd))
+            if abs(pf["mjd"] - f.mjd) > 1e-4:  # an exposure the other band's visit lacks
+                continue
+            x, y = (float(v) for v in world2pix(f.wcs, pf["ra_deg"], pf["dec_deg"]))
+            flux = 10.0 ** (-0.4 * (mags[a["id"]] - f.magzp))
+            ix, iy = int(round(x)), int(round(y))
+            in_frame = bool(0 <= ix < w and 0 <= iy < h and np.isfinite(raw[iy, ix]))
+            if -psf.radius <= ix < w + psf.radius and -psf.radius <= iy < h + psf.radius:
+                st, r0, c0 = psf.stamp(x + offset[0], y + offset[1])
+                rs, cs = slice(max(r0, 0), min(r0 + st.shape[0], h)), slice(max(c0, 0), min(c0 + st.shape[1], w))
+                raw[rs, cs] += (EE_WITHIN_STAMP * flux
+                                * st[rs.start - r0:rs.stop - r0, cs.start - c0:cs.stop - c0])
+            per[a["id"]].append({"frame": k, "mjd": f.mjd, "ra_deg": pf["ra_deg"], "dec_deg": pf["dec_deg"],
+                                 "x": x, "y": y, "in_frame": in_frame, "mag": mags[a["id"]], "flux_dn": flux})
+        header["INJECTED"] = (len(asts), "synthetic asteroids added (neowise.inject companion)")
+        _write_int(Path(f.path), out, raw, header)
+        _copy_companions(Path(f.path), out)
+    for a in asts:
+        e = {k: a[k] for k in a if k not in ("frames", "mag", "n_frames_in_frame")}
+        e.update({"mag": mags[a["id"]], "n_frames_in_frame": sum(p["in_frame"] for p in per[a["id"]]),
+                  "frames": per[a["id"]]})
+        truth["asteroids"].append(e)
+    known = visit_dir / "known.json"
+    if known.exists():
+        for o in json.loads(known.read_text())["asteroids"]:
+            truth["asteroids"].append({**o, "real": True})
+    (out / "truth.json").write_text(json.dumps(truth, indent=1))
+    for extra in ("visit.json", "known.json", EPSF_FILE):
+        if (visit_dir / extra).exists() and not (out / extra).exists():
+            os.symlink(os.path.relpath((visit_dir / extra).resolve(), out.resolve()), out / extra)
+    log(f"injected {len(asts)} companion asteroids into {seq.n_frames} frames -> {out}")
+    return out
+
+
 def scramble_visit(visit_dir, out_dir, seed: Optional[int] = None, log=None) -> Path:
     """Copy of the visit with frame times randomly permuted (a null test),
     catalogued asteroids (``known.json``) blanked (``nullcal.known_masks``)."""

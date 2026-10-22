@@ -591,6 +591,40 @@ sweep.py, tests/
     50% limit 11.12. Per-band calibration in `io.REAL_WISE_CAL` (ratios,
     fixed thresholds, floors) used by `detect`; W3 test visit (Oceana
     field): all 13 catalogued asteroids still found, no false tracks.
+  - W4 confirmation of short W3 tracks (`confirm.py`): along W3 tracks, W4
+    track scores (same exposures) were > 3 for 94% of 205 catalogued
+    asteroids and none of 101 null 3-frame candidates scoring 9-20; a
+    3-frame W3 track below 20 counts if W4 >= 3.
+  - Survey (`neowise survey`, resumable fetch + search + review): 120
+    ecliptic fields every 3 deg, 146 W3 visits (2010-01 .. 07): 1600
+    detections, 1593 catalogued, 6 suspects -- strong: RA 25.03034 Dec
+    +10.38132 (2010-07-19, 16 frames, 0.351 deg/day, W3 10.88, W4 6.0), RA
+    89.90507 +23.58910 (2010-03-15, 10 frames, 0.186, W3 9.65, W4 4.2; no
+    known comet within 0.5 deg, JPL), RA 311.49214 -17.89607 (2010-04-28,
+    15 frames, 0.248, W3 11.13, W4 8.2); doubtful: three just above
+    threshold with W4 <= 2.3 (noise; through 2003 UM28; a mis-fit of 2004
+    TT300). Real candidates had W4 > 4, doubtful ones < 2.5: show W4 on all
+    suspects' sheets and flag tracks crossing a catalogued asteroid (to do).
+    Searches after ~2026-10-21 21:45 used the joint filter; rerun the batch
+    with it.
+  - Joint W3+W4 matched filter (default for real W3 with its W4 twin): c =
+    0.56 (grid units). Alone it let W3's transient chains through (held
+    out 0.133 false per copy); with W4 confirmation of short tracks 0.080
+    (W3 alone 0.067), completeness at W3 10 / 10.5 / 11 / 11.5 0.99 / 0.83
+    / 0.44 / 0.11 off the plane (0.88 / 0.80 / 0.40 / 0.07), catalogued
+    found at V 20 / 21 / 22 57 / 54 / 52 (52 / 48 / 42). Calibration ratios
+    1.21 / 1.30 / 1.19, fixed 20 (9.0 confirmed) / 9.25 / 8.5; the W3-alone
+    values apply without a matching W4 visit. Calibration set: W4 injected
+    copies with realistic colours (`neowise.inject.inject_companion`,
+    log-normal ratio around 0.14 in DN = 0.56 measured). Fixed on the way:
+    registration used astropy's SIP inverse directly, which diverges far
+    off a W4 cutout (23 runs failed); now `io.world2pix`.
+  - GPU stacking default 3 deg/day (`stack_rate_max` None: 3 on CuPy, 0.25
+    otherwise); not calibrated at 3 deg/day yet.
+  - Next (in order): distance/parallax dimension in the stack (WISE
+    position known per frame), learned stamp classifier to lower
+    thresholds, real (empirical) PSF in the matched filter, half-pixel /
+    sub-pixel velocity grid.
   - Per-frame tail calibration: tested offline, not adopted. Per frame
     of all 30 visits, the 1e-4 upper quantile of the SNR map on star-free
     sky relative to the visit median: 95th percentile 1.57, 99th 3.0.

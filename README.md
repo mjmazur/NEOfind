@@ -294,7 +294,8 @@ uncrowded visits, held out one at a time:
 | band | ratios 3 / 4 / ≥ 5 | fixed (no copies) | false per copy | 50% completeness, off / in plane |
 |---|---|---|---|---|
 | W1 (NEOWISE) | 1.80 / 1.38 / 1.25 | 9.75 / 9.25 / 9.25 | 0.080* | 16.1 / 15.7 |
-| W3 (2010) | 1.67 / 1.64 / 1.24, 3-frame ≥ 20 | 20 / 8.75 / 8.25 | 0.067 | 11.1 / 10.7 |
+| W3 + W4 joint (2010, default) | 1.21 / 1.30 / 1.19, 3-frame ≥ 20 unless W4 confirms | 20 (9.0 confirmed) / 9.25 / 8.5 | 0.080 | 11.2 / 10.8 |
+| W3 alone (2010, no W4 twin) | 1.67 / 1.64 / 1.24, 3-frame ≥ 20 unless W4 confirms | 20 (11.75 confirmed) / 8.75 / 8.25 | 0.067 | 11.1 / 10.7 |
 | W4 (2010) | 1.32 / 1.27 / 1.24 | 9.0 / 8.5 / 8.25 | 0.067 | 7.6 / 7.4 |
 
 (*W1 on these 25 positions; 0.067 on all 30.) In W3, a few exposures in
@@ -306,6 +307,28 @@ scoring up to ~21; 3-frame W3 tracks therefore need ≥ 20 (0.133 false per
 copy without it, and requiring 4 frames instead lost bright fast movers).
 W3 finds half the catalogued asteroids at V 20 and some to V 22; W1 almost
 none fainter than V 17. W2 uses W1's values (not calibrated).
+
+**W4 confirmation** (`confirm.py`): along a W3 track, in the W4 frames of
+the same exposures, the detector's track score was > 3 for 94% of 205
+catalogued asteroids detected in W3 and for none of 101 null-copy 3-frame
+W3 candidates scoring 9-20 (median 0.12). So a 3-frame W3 track below the
+minimum of 20 but above the per-visit 3-frame threshold counts when its
+W4 score is >= 3 (``confirm_score`` on the detection and the review sheet).
+
+**Joint W3+W4 matched filter** (`detector.attach_companion`, default for
+real W3 when the W4 twin is fetched): W4 is registered onto the W3 grid,
+the search runs on psi = psi3 + c psi4, phi = phi3 + c^2 phi4, and the
+exact score adds W4's per-frame sums with its own PSF; c = 0.56 is the
+median W4/W3 flux ratio of 217 catalogued asteroids in the detector's grid
+units (90% within 0.39-0.78; W4's 5.5" pixels resampled onto the 2.75"
+grid are not flux-rescaled, so this is 4x the DN ratio). Magnitudes come
+from W3 alone. The scrambled copy permutes and masks both bands alike.
+Held out over the 25 uncrowded visits (with W4 confirmation of short
+tracks; the joint filter alone let W3's transient chains through, 0.133
+false per copy): completeness at W3 10 / 10.5 / 11 / 11.5 0.99 / 0.83 /
+0.44 / 0.11 off the plane (W3 alone 0.88 / 0.80 / 0.40 / 0.07), catalogued
+asteroids found at V 20 / 21 / 22 57 / 54 / 52 (52 / 48 / 42). Without a
+matching W4 visit the W3-alone calibration applies.
 
 **Reporting** (`report.py`): `--ades FILE` writes ADES PSV for the MPC,
 one row per frame a detection uses: the track position at that frame's
@@ -397,7 +420,10 @@ On the straight `wise_v1` paths the fit only costs (0.45″ rms against
 0.37″ in M2), which is why `wise_v2` is the reference. Per 12-frame
 sequence, the linker takes seconds; the shift-and-stack up to 0.25
 deg/day takes ~40 s on 32 cores; the full evaluation (96 runs, `-j 4`)
-takes ~1.5 h.
+takes ~1.5 h. On the CuPy (GPU) backend the stack goes to 3 deg/day by
+default (`stack_rate_max`; ~150x the velocities), where the CPU stays at
+0.25 and faster movers rely on linking (a >= 4 sigma peak in >= 3 frames);
+thresholds at 3 deg/day are not calibrated yet.
 
 ### Measured performance (simulated ground preset)
 
@@ -490,7 +516,29 @@ python -m neowise inject <visit> -o OUT --n 20        # synthetic asteroids in r
 python -m neowise scramble <visit> -o OUT             # null test: frame times permuted
 python -m neowise sweep data/neowise/*/* -o sims/real_v1
 python -m neodetect evaluate sims/real_v1             # completeness / false alarms on real data
+python -m neowise survey sims/survey_w3_v1            # fetch + search + review many visits (W3, resumable)
 ```
+
+**Survey** (`survey.py`): `neowise survey OUT` takes fields (`--fields
+FILE`, lines `ra dec`) or an ecliptic grid (`--lon-step`, `--lats`), and
+for each fetches its visits in the band (W3 by default, with the W4 twin
+for confirmation and the joint filter), runs `detect` (real-WISE defaults)
+and `review --list` (cutout sheets of suspects). Fetching waits out IRSA
+outages and skips frames the archive lacks; searches run as subprocesses,
+`--jobs` at a time. State is in `OUT/survey.json`, so it resumes;
+`OUT/suspects.txt` lists each suspect with its sheet as found. A first
+batch, 120 ecliptic fields every 3 deg (146 visits, January-July 2010, W3
+alone for most): 1600 detections, 1593 catalogued asteroids, 6 suspects --
+3 strong (16 / 10 / 15 frames, W4 track scores 6.0 / 4.2 / 8.2, no
+catalogued object or known comet matching) and 3 doubtful (just above
+threshold, W4 <= 2.3: noise, and tracks through catalogued asteroids).
+
+`testdata/` holds three fields with asteroids for trying things out: the
+Oceana field in NEOWISE W1 (2015-05-12) and in W3 + W4 (2010-05-14, 13-15
+catalogued asteroids), and the field of the first strong W3 candidate
+(2010-07-19, W3 + W4). E.g. `python -m neodetect detect
+testdata/neowise/r152.090+11.472_s0.6_w3/20100514` (finds the W4 twin
+beside it).
 
 - **Search** (`query.py`): IRSA IBE metadata tables for the cryogenic,
   post-cryo and NEOWISE-R phases (`--tables`; default `neowiser` for W1/W2,

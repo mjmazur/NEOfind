@@ -217,16 +217,26 @@ def scrambled(seq, rng):
     their new times): nothing real moves linearly any more, while every
     artifact and the static sky stay. Catalogued asteroids (``seq.known``)
     are masked first (``known_masks``)."""
-    masks = known_masks(seq.frames, seq.known)
-    seq = dataclasses.replace(seq, frames=[dataclasses.replace(f, bad=f.bad | m) if m.any() else f
-                                           for f, m in zip(seq.frames, masks)])
+    def masked(s):
+        masks = known_masks(s.frames, s.known)
+        return [dataclasses.replace(f, bad=f.bad | m) if m.any() else f for f, m in zip(s.frames, masks)]
+
     times = seq.times
     perm = rng.permutation(len(times))
     while len(times) > 2 and np.all(perm == np.arange(len(times))):
         perm = rng.permutation(len(times))
-    frames = [dataclasses.replace(f, mjd=float(t)) for f, t in zip(seq.frames, times[perm])]
-    frames.sort(key=lambda f: f.mjd)
-    return dataclasses.replace(seq, frames=frames, truth=None, known=None)
+
+    def permuted(fr):
+        out = [dataclasses.replace(f, mjd=float(t)) for f, t in zip(fr, times[perm])]
+        out.sort(key=lambda f: f.mjd)
+        return out
+    comp = None
+    if seq.companion is not None:  # the same exposures in another band: the same permutation
+        comp = dataclasses.replace(seq.companion, frames=permuted(masked(seq.companion)), truth=None,
+                                   known=None, source=None)
+    # source=None: detect must not load the (unscrambled) companion itself
+    return dataclasses.replace(seq, frames=permuted(masked(seq)), truth=None, known=None,
+                               source=None, companion=comp)
 
 
 def guard_thresholds(level: float, base: Dict[str, float],

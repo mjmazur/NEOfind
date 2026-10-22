@@ -39,7 +39,7 @@ from scipy.ndimage import map_coordinates
 
 from .cosmics import (estimate_sky, measured_sharpness, sharp_outliers, star_sharpness_limits,
                       streak_mask)
-from .io import Frame, Sequence, default_psf_fwhm_arcsec, robust_sigma
+from .io import Frame, Sequence, default_psf_fwhm_arcsec, robust_sigma, world2pix
 from .psf import FWHM_TO_SIGMA
 
 MIN_STATIC_FRAMES = 3  # valid frames needed for the second pass's static-sky estimate
@@ -224,12 +224,14 @@ def _second_pass(f: Frame, grid: WCS, static, scale, psf_sigma_native, outlier_n
 
 def register(seq: Sequence, ref: Optional[int] = None, region=None,
              outlier_nsig: float = 4.0, second_pass: bool = True, streaks: bool = True,
-             log=None) -> Registered:
+             log=None, grid: Optional[WCS] = None) -> Registered:
+    """Resample every frame onto a common grid (``grid``, e.g. another band's,
+    or one built around the frames: ``build_grid``)."""
     log = log or (lambda *a: None)
     frames = seq.frames
     n = len(frames)
     ref = n // 2 if ref is None else ref
-    grid = build_grid(frames, ref, region)
+    grid = grid if grid is not None else build_grid(frames, ref, region)
     gw, gh = grid.pixel_shape
     yy, xx = np.mgrid[0:gh, 0:gw]
     g_ra, g_dec = grid.all_pix2world(xx.ravel(), yy.ravel(), 0)
@@ -265,9 +267,12 @@ def register(seq: Sequence, ref: Optional[int] = None, region=None,
         filled = _fill(resid, bad, max(sig_native, 1.0))
         sig = _fill(sig, bad | ~np.isfinite(sig), max(sig_native, 1.0))
 
-        fx, fy = f.wcs.all_world2pix(g_ra, g_dec, 0)
+        # Robust inverse: far off a frame (e.g. another band's grid around a
+        # W4 cutout) the SIP inversion can diverge (io.world2pix).
+        fx, fy = (np.asarray(v, float) for v in world2pix(f.wcs, g_ra, g_dec))
         fh, fw = f.shape
-        inside = (fx > 1.0) & (fx < fw - 2.0) & (fy > 1.0) & (fy < fh - 2.0)
+        inside = (np.isfinite(fx) & np.isfinite(fy) & (fx > 1.0) & (fx < fw - 2.0)
+                  & (fy > 1.0) & (fy < fh - 2.0))
         coords = np.array([fy[inside], fx[inside]])
         img = map_coordinates(filled.astype(np.float64), coords, order=3, mode="nearest")
         v = map_coordinates((sig.astype(np.float64)) ** 2, coords, order=1, mode="nearest")
@@ -305,7 +310,8 @@ def register(seq: Sequence, ref: Optional[int] = None, region=None,
             if not n2[-1]:
                 continue
             inv = np.zeros((gh, gw), bool)
-            x0, y0 = np.floor(hx).astype(int), np.floor(hy).astype(int)
+            fin = np.isfinite(hx) & np.isfinite(hy)
+            x0, y0 = np.floor(hx[fin]).astype(int), np.floor(hy[fin]).astype(int)
             for dy in range(-1, 3):
                 for dx in range(-1, 3):
                     xi, yi = x0 + dx, y0 + dy

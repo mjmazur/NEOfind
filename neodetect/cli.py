@@ -35,8 +35,9 @@ def _add_detector_args(p: argparse.ArgumentParser) -> None:
                    help=f"fastest linked motion, deg/day (default: {d.link_rate_max})")
     g.add_argument("--stack-rate-min", type=float, default=d.stack_rate_min,
                    help=f"slowest stacked motion, deg/day (default: {d.stack_rate_min})")
-    g.add_argument("--stack-rate-max", type=float, default=d.stack_rate_max,
-                   help=f"fastest stacked motion, deg/day (default: {d.stack_rate_max})")
+    g.add_argument("--stack-rate-max", type=float, default=None,
+                   help="fastest stacked motion, deg/day (default: 3 on the GPU backend, "
+                        "0.25 otherwise)")
     g.add_argument("--stack-threshold", type=float, default=d.stack_threshold,
                    help=f"stacked SNR for candidates (default: {d.stack_threshold})")
     g.add_argument("--backend", default=d.backend,
@@ -152,8 +153,8 @@ def cmd_detect(args) -> int:
         n_null = default_null_scrambles(seq.frames[0])
     if n_null and not doc["stats"].get("skipped"):
         from . import nullcal
-        from .io import band_calibration
-        band_cal = band_calibration(seq.frames[0]) or {}
+        from .io import band_calibration  # noqa: F811
+        band_cal = band_calibration(seq.frames[0], joint=bool(doc["stats"].get("joint"))) or {}
         ratios = (dict(zip(nullcal.FRAME_CLASSES, args.null_ratio)) if args.null_ratio
                   else band_cal.get("ratios"))
         mode = args.null_mode or "per-visit"
@@ -163,6 +164,13 @@ def cmd_detect(args) -> int:
                                      base=base, floor=band_cal.get("floor"))
         nullcal.apply(doc["detections"], cal["thresholds"], cal["veto_sites"])
         doc["null_calibration"] = cal
+    from .io import band_calibration
+    rule = (band_calibration(seq.frames[0], joint=bool(doc["stats"].get("joint"))) or {}).get("confirm")
+    if rule:  # short tracks below the band's minimum, confirmed in a companion band
+        from . import confirm
+        cal = doc.get("null_calibration")
+        thr3 = (cal["level"] * cal["ratios"]["3"] if cal and cal.get("ratios") else rule["fixed_3"])
+        confirm.confirm_short_tracks(doc, seq.source, rule, thr3, log=log)
     doc["frames"] = [{"path": f.path, "mjd": f.mjd} for f in seq.frames]
     if seq.truth:
         doc["truth_eval"] = truth_eval(seq, result)

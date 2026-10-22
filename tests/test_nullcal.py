@@ -130,5 +130,9 @@ def test_band_calibration_and_w3_floor():
     assert default_thresholds(f3) == REAL_WISE_CAL["3"]["fixed"] and default_thresholds(f4)[0] == 9.0
     assert REAL_WISE_CAL["1"]["ratios"] == nullcal.NULL_RATIO
     thr = nullcal.thresholds(7.0, REAL_WISE_CAL["3"]["ratios"], REAL_WISE_CAL["3"]["floor"])
-    assert thr["3"] == 20.0 and abs(thr["4"] - 7.0 * 1.64) < 1e-9
+    assert thr["3"] == 20.0 and abs(thr["4"] - 7.0 * 1.30) < 1e-9  # joint W3+W4
+    single = band_calibration(f3, joint=False)  # W3 searched alone
+    assert single["ratios"]["4"] == 1.64 and single["fixed"] == (20.0, 8.75, 8.25)
+    assert single["floor"] == {"3": 20.0} and "joint" not in single and single["confirm"]["fixed_3"] == 11.75
+    assert band_calibration(f4, joint=False) is REAL_WISE_CAL["4"]  # no single variant
     assert band_calibration(SimpleNamespace(header=fits.Header({"SIMULATD": True}), band="3")) is None
