@@ -517,6 +517,13 @@ python -m neowise scramble <visit> -o OUT             # null test: frame times p
 python -m neowise sweep data/neowise/*/* -o sims/real_v1
 python -m neodetect evaluate sims/real_v1             # completeness / false alarms on real data
 python -m neowise survey sims/survey_w3_v1            # fetch + search + review many visits (W3, resumable)
+python -m neowise campaign run OUT --max-visits 200   # unattended W3 + W4 campaign, 10-17 h (test batch)
+python -m neowise campaign status OUT                 # progress and projected time to finish
+python -m neowise campaign pause OUT                  # free the GPU now; `resume` to continue
+python -m neowise reviewer OUT                        # web page: blind review of every detection
+python -m neowise skymap OUT [--uncatalogued]         # sky map PNG of the confirmed and likely asteroids
+python -m neowise plots OUT                           # result and check plots (PNGs) in OUT/plots
+python -m neowise report OUT                          # PDF report of the results and findings (OUT/report.pdf)
 ```
 
 **Survey** (`survey.py`): `neowise survey OUT` takes fields (`--fields
@@ -532,6 +539,169 @@ alone for most): 1600 detections, 1593 catalogued asteroids, 6 suspects --
 3 strong (16 / 10 / 15 frames, W4 track scores 6.0 / 4.2 / 8.2, no
 catalogued object or known comet matching) and 3 doubtful (just above
 threshold, W4 <= 2.3: noise, and tracks through catalogued asteroids).
+
+**Campaign** (`campaign.py`, `reviewer.py`): the survey made unattended,
+for all of the 2010 W3 + W4 data. `neowise campaign run OUT` tiles
+|ecliptic latitude| <= `--lat-max` (default 10; 90 = whole sky) with
+0.6 deg fields, worked in a fixed random order so a first batch
+(`--max-visits N`) is a fair sample; `campaign status` then projects the
+time for the rest. A larger `--lat-max` later adds fields after those done.
+`--wide-share 0.25` also adds the fields beyond `--lat-max` (up to
+`--wide-lat-max`, default 90: the poles), in their own random order, and
+gives them 25% of the search time: each next visit comes from the band
+behind on its share of the seconds searched since the mix began (time,
+not visits: far from the ecliptic WISE saw each field many more times).
+Searches take fetched visits first in, first out; `campaign status` shows
+each band's progress and the share so far, and projects the time left for
+the near band at its 75%.
+Each visit: fetch W3 and its W4 twin, `detect` (joint W3 + W4; W3 alone
+without W4), `review --list` (catalogue match), the **W4 gate**, and
+blind cutout sheets of every detection (`neowise sheets`). The gate scores
+each track in the W4 frames: a suspect passes with >= 3 (`--w4-min`). The
+search keeps the calibrated weighting (W3 + 0.56 W4: W4 is the noisier
+band), and the W4 score is shown at review. `--stack-rate-max` is 0.25 deg/day: at 3 deg/day
+the three test fields took 15-20x longer and found nothing more.
+
+- **Automate:** `--automate` runs around the observatory's detection
+  runs instead of by the clock (`automate.py`, the SLAVEMSG protocol of
+  IDS_tools' `automate_night.py`, UDP 17633 from 10.24.8.10): searches stop
+  on SLAVEMSG_DETBEG and start `--resume-delay` (30 min) after
+  SLAVEMSG_DETEND. It waits for a DETEND before starting; `--automate-now`
+  starts at once. `neowise slavemsg detbeg|detend` sends one by hand.
+- **Hours:** without `--automate`, works only within `--hours` in the `--tz` time zone (default 10-17 America/Toronto; the machine clock is UTC); a search
+  running at the end of the window is stopped and redone the next day.
+- **Pause:** `campaign pause OUT` (or the review page's button) kills the
+  running searches within seconds, which frees the GPU; `campaign resume`
+  continues. The campaign also pauses itself while another program holds
+  >= 300 MiB of GPU memory (`--yield-min-mib`; RustDesk's ~140 MiB encoder
+  context is ignored, `--yield-ignore`).
+- **GPU share:** searches run with `NEOFIND_GPU_LIMIT` = `--gpu-limit`
+  (0.8): the CUDA kernel idles after each launch (nvidia-smi reads ~77%) and
+  CuPy's memory pool is capped at 80% of the card.
+- **Resuming:** all state is in `OUT/campaign.sqlite`, updated as each step
+  finishes; after a crash `campaign run OUT` requeues the interrupted
+  searches and kills any it left running. `scripts/neofind-campaign.service`
+  and `scripts/neofind-reviewer.service` (systemd user units) start the
+  campaign and the review page at boot and after a crash; see `scripts/SERVICE.md`.
+- **Archive failures:** a visit whose downloads fail 3 times in a row (2 min
+  apart) goes back in the queue for an hour and the next visit is fetched,
+  so one stuck visit doesn't hold up the rest; after 12 such tries it is
+  failed (`campaign retry-failed OUT` requeues it). When 3 visits in a row
+  fail, the archive is taken to be down and fetching waits 10 min.
+- **Disk:** a searched visit's W4 FITS files are deleted at once, its W3
+  ones (~20 MB) when nothing in it is uncatalogued, or once every
+  uncatalogued detection has a verdict and none is confirmed or likely
+  (`--keep-fits` keeps all); detections, logs and sheets stay.
+- **Backfill:** `campaign backfill-sheets OUT` queues visits searched
+  before the review was blind to be fetched again for their blind sheets
+  (no new search; they go first and don't count against `--max-visits`).
+
+`neowise reviewer OUT` serves http://127.0.0.1:8765, a **blind** review:
+every detection, catalogued asteroid or not, in a random order, with its
+cutout sheet (no catalogue name on it), W4 score and track; Confirm (C) /
+Likely (L) / Discard (D) / Skip (S) / Undo (U), with a note. The catalogue
+match (the asteroid's name and number, or "not catalogued") is hidden in
+"To review" and shown once a detection has a verdict: under Confirmed,
+Likely, Not catalogued (confirmed or likely, no catalogued asteroid
+there: the possible discoveries), Discarded and Results (the verdicts
+against the catalogue). Verdicts go to the database and to the visit's
+`review.json`; `OUT/confirmed.csv` (the final list: confirmed and likely,
+with the catalogue match) is rewritten after each.
+
+"Export for MPC" asks for the submitter's name (and institution, measurers,
+observers; kept in `OUT/mpc.json`) and writes
+`OUT/mpc/neofind_C51_<time>.psv`, ADES PSV for submission to the MPC: the
+confirmed detections not catalogued (optionally the likely ones too), one
+tracklet each with trkSub `NF` + the detection's id in base 36 (the same
+in every export), station C51 with WISE's geocentric position per frame,
+astCat 2MASS, no magnitudes (W3/W4 aren't ADES bands); the `.csv` beside
+it says which detection each trkSub is. Check the file with the MPC's
+PSV test page before submitting it.
+
+The Sky map tab (or `neowise skymap OUT`, a PNG; `--uncatalogued`,
+`--confirmed-only`, `-o FILE`) shows where the confirmed and likely
+detections are: Hammer-Aitoff, equatorial, RA increasing to the left;
+orange where no catalogued asteroid is, blue where one is, rings for
+likely; the fields searched in grey, the ecliptic and the band's edges.
+"Only not catalogued" keeps the possible discoveries; hovering a dot
+names it, clicking opens it in its tab; "Download PNG" saves the map.
+
+**PDF report.** The review page's "PDF report" button (or `neowise report
+OUT [-o FILE] [--confirmed-only] [--no-lookup]`, `report.py`) makes a PDF of
+the results in about 10 seconds. Page 1 has a summary and the significant
+findings, worked out from the plots' numbers:
+- the detections not catalogued, with the ones moving unlike a main-belt
+  asteroid first;
+- the asteroids WISE saw before their discovery;
+- the detection limit;
+- the astrometric offset;
+- how many unreviewed detections are expected to be real;
+- warnings about false tracks near the galactic plane and about
+  suspiciously bright detections.
+
+After that come a table of the detections not catalogued (with the orbit
+type of any catalogued asteroid near one) with their cutout sheets, the sky map (all detections, then those not catalogued), every plot
+with a caption, and the list of asteroids seen before discovery with each
+one's orbit type (SkyBoT's class).
+
+**Arc and time span.** Each detection also has its arc: the angular
+distance from the first to the last frame its track was measured on
+(`arc_arcsec`), and the time between them (`span_hours`). They are shown
+next to rate and PA in the detail view, the tooltips, the gallery, the
+report and `confirmed.csv`.
+
+The Plots tab (or `neowise plots OUT`, PNGs in `OUT/plots`; `-o DIR`,
+`--only NAME...`, `--confirmed-only`) has the results (`plots.py`):
+
+- **Completeness**: of the catalogued asteroids that crossed a searched
+  field on at least 3 frames, the fraction found, against the signal the
+  detector measures on the asteroid's predicted track (what a perfect
+  search would score), then, for those with a signal of 10 or more, by
+  rate and by orbit class. This is the search's detection limit.
+- **Motion**: each confirmed or likely detection's motion along and
+  across the ecliptic (deg/day). Catalogued main-belt asteroids form a
+  clump; a detection not catalogued far outside it (σ: its distance in
+  units of the clump's robust spread) doesn't move like a main-belt
+  asteroid, the first sign of an NEO.
+- **Not catalogued**: those detections' cutout sheets, the most unusual
+  motion first.
+- **Astrometry**: the catalogued detections' positions minus the
+  catalogue's (SkyBoT, shifted to the spacecraft), per frame and per
+  detection, against track score: what the MPC submission's positions
+  are worth. Ephemerides worse than 2" are left out.
+- **Before discovery**: a histogram, per catalogued asteroid confirmed (or
+  likely), of its discovery date minus the date of the earliest WISE image
+  it was found on; right of zero, WISE saw it before it was discovered.
+  Numbered asteroids use their credited discovery date from JPL's
+  Small-Body Database (only the number is sent, one query at a time;
+  cached in `OUT/discovery_cache.json`, looked up in the background by the
+  review page and up front by `neowise plots`). Unnumbered asteroids have
+  no credited discovery, so the date their provisional designation encodes
+  (the middle of its half month) stands in, shaded separately. The table
+  under the chart lists those seen before discovery.
+
+and checks on the search:
+
+- **Scores**: detections by track score and verdict, and per score the
+  fraction of those reviewed judged real. The review order is random, so
+  this estimates how many of the detections not yet reviewed are real.
+- **Brightness**: W3 magnitudes, catalogued (a histogram) against not
+  catalogued (each one).
+- **Galactic latitude**: detections per visit by the field's galactic
+  latitude; crowded fields near the plane make false tracks.
+- **Along the ecliptic**: each visit by ecliptic longitude (catalogued
+  asteroids on the field, found, and detections not catalogued), the
+  galactic plane's crossings shaded.
+- **Solar system**: where the catalogued asteroids found were, seen from
+  ecliptic north, by orbit class, from their catalogued distances; grey,
+  every catalogued asteroid on a searched field; the Earth's path.
+- **Progress**: visits searched and detections over time, from
+  `campaign.log`, the times the campaign wasn't searching shaded (outside
+  the hours, a detection run, paused, not running).
+
+Hovering a point says what it is; clicking a detection opens it. What
+each visit contributes is read once from its `detections.json` and
+`known.json` and kept in `OUT/plots_cache.json`.
 
 `testdata/` holds three fields with asteroids for trying things out: the
 Oceana field in NEOWISE W1 (2015-05-12) and in W3 + W4 (2010-05-14, 13-15

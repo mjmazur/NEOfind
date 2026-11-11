@@ -1,4 +1,4 @@
-"""Command-line interface: ``python -m neowise {visits,fetch,known,inject,scramble,sweep,survey}``.
+"""Command-line interface: ``python -m neowise {visits,fetch,known,inject,scramble,sweep,survey,campaign,gate,reviewer}``.
 
     python -m neowise visits 150.0 2.0                  # list visits covering a position
     python -m neowise fetch 150.0 2.0 --visit 3         # download that visit (0.5 deg cutouts)
@@ -6,6 +6,10 @@
     python -m neowise inject data/neowise/<visit> -o OUT --n 20   # synthetic asteroids
     python -m neowise scramble data/neowise/<visit> -o OUT          # null test copy
     python -m neowise sweep data/neowise/*/* -o sims/real_v1        # both, for `neodetect evaluate`
+    python -m neowise campaign run OUT --max-visits 200   # W3 + W4 campaign (test batch), 10-17 h
+    python -m neowise campaign run OUT --automate         # ... around the detection runs (SLAVEMSG, UDP 17633)
+    python -m neowise campaign pause OUT                  # free the GPU; `resume` to continue
+    python -m neowise reviewer OUT                        # blind review page: confirm / likely / discard
 """
 
 import argparse
@@ -18,6 +22,15 @@ from . import query
 from .download import download_visit
 
 DATA_DIR = Path("data/neowise")
+
+
+def _time_zone(name):
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    try:
+        name and ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise argparse.ArgumentTypeError(f"unknown time zone {name!r} (e.g. America/Toronto)")
+    return name
 
 
 def _log(msg):
@@ -155,6 +168,96 @@ def cmd_survey(a):
     return 0
 
 
+def cmd_campaign(a):
+    from . import campaign as C
+    if a.action == "status":
+        C.print_status(a.output)
+        return 0
+    if a.action == "retry-failed":
+        print(f"{C.retry_failed(a.output)} failed visit(s) requeued")
+        return 0
+    if a.action == "backfill-sheets":
+        print(f"{C.backfill_sheets(a.output)} searched visit(s) queued to be fetched again for blind sheets "
+              "(the running campaign picks them up before new visits)")
+        return 0
+    if a.action in ("pause", "resume", "stop"):
+        kw = {"pause": {"paused": True, "reason": a.reason or "paused by the user"},
+              "resume": {"paused": False, "reason": ""}, "stop": {"stop": True}}[a.action]
+        C.set_control(a.output, **kw)
+        print(f"{a.output}: {a.action} requested (a running search is killed within seconds)"
+              if a.action != "resume" else f"{a.output}: resumed")
+        return 0
+    s = C.Settings(hours=a.hours, tz=a.tz, automate="wait" if a.automate else "now" if a.automate_now else "",
+                   udp_port=a.udp_port, controller_ip=a.controller_ip, resume_delay=a.resume_delay, jobs=a.jobs, threads=a.threads, gpu_limit=a.gpu_limit,
+                   yield_gpu=a.yield_gpu, yield_min_mib=a.yield_min_mib, yield_ignore=a.yield_ignore,
+                   stack_rate_max=a.stack_rate_max, size=a.size, tables=a.tables,
+                   w4_min=a.w4_min, keep_fits=a.keep_fits, lat_max=a.lat_max, wide_share=a.wide_share)
+    camp = C.Campaign(a.output, s, log=_log)
+    if a.fields:
+        fields = []
+        for line in Path(a.fields).read_text().splitlines():
+            if line.strip() and not line.startswith("#"):
+                ra, dec = (float(x) for x in line.split()[:2])
+                fields.append((ra, dec, float("nan"), float("nan")))
+        n = C.add_fields(camp.db, fields)
+    else:
+        n = C.add_fields(camp.db, C.ecliptic_band_fields(a.lat_max, a.size))
+    if n:
+        camp.log(f"added {n} fields" + ("" if a.fields else f" (|ecliptic lat| <= {a.lat_max} deg)"))
+    if a.wide_share > 0 and a.wide_lat_max > a.lat_max:  # after the band's: their own random order
+        n = C.add_fields(camp.db, C.ecliptic_band_fields(a.wide_lat_max, a.size))
+        if n:
+            camp.log(f"added {n} fields beyond the band ({a.lat_max:g} < |ecliptic lat| <= {a.wide_lat_max:g} deg)")
+    if a.action == "add-fields":
+        return 0
+    camp.run(max_visits=a.max_visits)
+    return 0
+
+
+def cmd_sheets(a):
+    from .campaign import blind_sheets
+    blind_sheets(a.visit_dir, log=_log)
+
+
+def cmd_slavemsg(a):
+    from . import automate
+    t = {"detbeg": automate.SLAVEMSG_DETBEG, "detend": automate.SLAVEMSG_DETEND}[a.type]
+    automate.send(t, a.host, a.port, a.text or "")
+    print(f"sent {automate.type_name(t)} to {a.host}:{a.port}")
+
+
+def cmd_gate(a):
+    from .campaign import w4_gate
+    w4_gate(a.visit_dir, a.min_score, log=_log)
+    return 0
+
+
+def cmd_skymap(a):
+    from .skymap import write_skymap
+    path = write_skymap(a.output, a.out, uncatalogued_only=a.uncatalogued, include_likely=not a.confirmed_only)
+    print(f"wrote {path}")
+    return 0
+
+
+def cmd_plots(a):
+    from .plots import PLOTS, write_plots
+    for path in write_plots(a.output, a.out, include_likely=not a.confirmed_only, names=a.only or PLOTS):
+        print(f"wrote {path}")
+    return 0
+
+
+def cmd_report(a):
+    from .report import write_report
+    print(f"wrote {write_report(a.output, a.out, include_likely=not a.confirmed_only, lookup=not a.no_lookup)}")
+    return 0
+
+
+def cmd_reviewer(a):
+    from .reviewer import serve
+    serve(a.output, host=a.host, port=a.port)
+    return 0
+
+
 def _range(s):
     lo, hi = (float(x) for x in s.split(":"))
     return lo, hi
@@ -238,6 +341,111 @@ def main(argv=None) -> int:
     q.add_argument("--threads", type=int, default=8, help="threads per search (default 8)")
     q.add_argument("--limit", type=int, default=None, help="only the first N fields")
     q.set_defaults(func=cmd_survey)
+
+    from .campaign import Settings, W4_MIN_SCORE
+    d = Settings()
+    q = sub.add_parser("campaign", help="unattended W3 + W4 search of the 2010 survey (resumable)")
+    q.add_argument("action", choices=("run", "add-fields", "status", "pause", "resume", "stop", "retry-failed",
+                                          "backfill-sheets"),
+                   help="run (or resume) the campaign; add-fields only adds fields; status; pause / "
+                        "resume (frees the GPU at once); stop; retry-failed requeues failed visits; "
+                        "backfill-sheets makes blind sheets for visits searched before the review was blind")
+    q.add_argument("output", help="campaign directory (campaign.sqlite, data/, campaign.log)")
+    q.add_argument("--lat-max", type=float, default=10.0,
+                   help="fields with |ecliptic latitude| <= this, deg (default 10; 90 = whole sky); "
+                        "a larger value later adds the extra fields")
+    q.add_argument("--wide-share", type=float, default=d.wide_share,
+                   help="share of the search time for fields beyond --lat-max (e.g. 0.25; default 0: none); "
+                        "the next visit comes from the band behind on its share")
+    q.add_argument("--wide-lat-max", type=float, default=90.0,
+                   help="with --wide-share: fields up to this |ecliptic latitude|, deg (default 90: the poles)")
+    q.add_argument("--fields", help="file of 'ra dec' lines instead of the ecliptic band")
+    q.add_argument("--max-visits", type=int, default=None,
+                   help="stop after this many visits in all (a test batch; fields go in random order)")
+    q.add_argument("--hours", default=d.hours, help=f"active hours in --tz (default {d.hours})")
+    q.add_argument("--tz", default=d.tz, type=_time_zone,
+                   help=f"time zone of --hours, IANA name (default {d.tz}; '' = the machine's)")
+    g = q.add_mutually_exclusive_group()
+    g.add_argument("--automate", action="store_true",
+                   help="run around the night's detection runs instead of --hours: stop on SLAVEMSG_DETBEG, "
+                        "start --resume-delay after SLAVEMSG_DETEND; wait for a DETEND before starting")
+    g.add_argument("--automate-now", action="store_true",
+                   help="as --automate, but start at once (the GPU is known to be free)")
+    q.add_argument("--udp-port", type=int, default=d.udp_port,
+                   help=f"UDP port of the controller's SLAVEMSGs (default {d.udp_port})")
+    q.add_argument("--controller-ip", default=d.controller_ip,
+                   help=f"the controller's address; others are ignored (default {d.controller_ip})")
+    q.add_argument("--resume-delay", type=float, default=d.resume_delay,
+                   help=f"minutes after SLAVEMSG_DETEND before searching again (default {d.resume_delay:g})")
+    q.add_argument("--jobs", type=int, default=d.jobs, help=f"searches at a time (default {d.jobs})")
+    q.add_argument("--threads", type=int, default=d.threads, help="CPU threads per search (default: CPUs / jobs)")
+    q.add_argument("--gpu-limit", type=float, default=d.gpu_limit,
+                   help=f"share of the GPU searches may use (default {d.gpu_limit})")
+    q.add_argument("--no-yield-gpu", dest="yield_gpu", action="store_false",
+                   help="don't pause while other programs compute on the GPU")
+    q.add_argument("--yield-min-mib", type=float, default=d.yield_min_mib,
+                   help=f"pause for another program only if it holds this much GPU memory, MiB "
+                        f"(default {d.yield_min_mib:g})")
+    q.add_argument("--yield-ignore", default=d.yield_ignore,
+                   help=f"comma-separated process names never paused for (default {d.yield_ignore})")
+    q.add_argument("--stack-rate-max", type=float, default=d.stack_rate_max,
+                   help=f"shift-and-stack rate limit, deg/day (default {d.stack_rate_max})")
+    q.add_argument("--size", type=float, default=d.size, help=f"field side and spacing, deg (default {d.size})")
+    q.add_argument("--tables", default=d.tables,
+                   help="mission phases (default allsky: the 4-band survey; add cryo_3band for W3-only "
+                        "visits of Aug-Sep 2010)")
+    q.add_argument("--w4-min", type=float, default=d.w4_min,
+                   help=f"W4 track score a suspect needs (default {d.w4_min})")
+    q.add_argument("--keep-fits", action="store_true", help="keep every visit's FITS files")
+    q.add_argument("--reason", help="pause: a note shown in the status")
+    q.set_defaults(func=cmd_campaign)
+
+    q = sub.add_parser("slavemsg", help="send a SLAVEMSG datagram (try --automate by hand)")
+    q.add_argument("type", choices=("detbeg", "detend"))
+    q.add_argument("--host", default="127.0.0.1")
+    q.add_argument("--port", type=int, default=17633)
+    q.add_argument("--text", help="the message's text")
+    q.set_defaults(func=cmd_slavemsg)
+
+    q = sub.add_parser("sheets", help="blind cutout sheets for every detection of a searched visit")
+    q.add_argument("visit_dir")
+    q.set_defaults(func=cmd_sheets)
+
+    q = sub.add_parser("gate", help="score a W3 visit's detections in its W4 twin (the campaign's W4 gate)")
+    q.add_argument("visit_dir")
+    q.add_argument("--min-score", type=float, default=W4_MIN_SCORE)
+    q.set_defaults(func=cmd_gate)
+
+    q = sub.add_parser("reviewer", help="web page for the blind review of a campaign's detections")
+    q.add_argument("output", help="campaign directory")
+    q.add_argument("--host", default="127.0.0.1")
+    q.add_argument("--port", type=int, default=8765)
+    q.set_defaults(func=cmd_reviewer)
+
+    q = sub.add_parser("skymap", help="sky map (PNG) of a campaign's confirmed and likely asteroids")
+    q.add_argument("output", help="campaign directory")
+    q.add_argument("-o", "--out", help="image file (.png, .svg or .pdf; default OUT/skymap.png)")
+    q.add_argument("--uncatalogued", action="store_true", help="only the ones no catalogued asteroid matches")
+    q.add_argument("--confirmed-only", action="store_true", help="leave out the ones marked likely")
+    q.set_defaults(func=cmd_skymap)
+
+    q = sub.add_parser("plots", help="result plots (PNGs) of a campaign: completeness, motion, the detections "
+                                     "not catalogued, astrometry, and checks on the search")
+    q.add_argument("output", help="campaign directory")
+    q.add_argument("-o", "--out", help="directory for the PNGs (default OUT/plots)")
+    q.add_argument("--only", nargs="+", choices=("completeness", "motion", "gallery", "astrometry", "discovery", "scores",
+                                                 "brightness", "galactic", "ecliptic", "solar_system", "progress"),
+                   help="just these plots")
+    q.add_argument("--confirmed-only", action="store_true", help="leave out the detections marked likely")
+    q.set_defaults(func=cmd_plots)
+
+    q = sub.add_parser("report", help="a PDF report of a campaign's results and significant findings")
+    q.add_argument("output", help="campaign directory")
+    q.add_argument("-o", "--out", help="the PDF (default OUT/report.pdf)")
+    q.add_argument("--confirmed-only", action="store_true", help="leave out the detections marked likely")
+    q.add_argument("--no-lookup", action="store_true",
+                   help="don't look up missing discovery dates in JPL's Small-Body Database first")
+    q.set_defaults(func=cmd_report)
 
     a = p.parse_args(argv)
     return a.func(a)

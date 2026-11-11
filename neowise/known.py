@@ -187,5 +187,7 @@ def write_known(seq, out_dir, center, radius_deg: float, band: int = 1, max_v: f
                 log=None) -> Path:
     doc = known_objects(seq, center, radius_deg, band, max_v, log)
     path = Path(out_dir) / "known.json"
-    path.write_text(json.dumps(doc, indent=1))
+    tmp = path.with_name("known.json.part")  # atomic: the campaign takes known.json as "fetched"
+    tmp.write_text(json.dumps(doc, indent=1))
+    tmp.replace(path)
     return path

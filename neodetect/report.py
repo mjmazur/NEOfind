@@ -12,9 +12,10 @@ uncertainties combine the frame's centroid error (``sqrt(2) sigma_PSF / z``,
 sky-limited Gaussian) with ``ASTROM_FLOOR_ARCSEC``, the median track error
 measured on injected asteroids in real NEOWISE frames (README), and
 magnitude uncertainties with ``PHOT_FLOOR_MAG``. Submitter
-and observer names are placeholders to fill in before submitting, and the
-WISE ``mode``/``astCat`` values are best guesses to check against the MPC's
-ADES documentation before a real submission.
+and observer names are placeholders unless given (``neowise reviewer``'s
+MPC export asks for them). ``mode`` CCD and ``astCat`` 2MASS are from the
+MPC's lists of ADES values; W1-W4 are not among its photometric bands, so
+the MPC export leaves the magnitudes out.
 
 Positions are those of the fitted track, which includes a constant
 acceleration (``trackfit``): enough for a main-belt orbit over a WISE visit
@@ -104,25 +105,59 @@ def ades_rows(doc: dict, headers: List, station: Optional[str] = None,
     return rows
 
 
+WISE_TELESCOPE = {"name": "WISE", "aperture": "0.4", "design": "Reflector", "detector": "Si:As"}
+
+
 def write_ades_psv(rows: List[dict], path, observatory: str = "C51",
-                   submitter: str = "SUBMITTER NAME", observers: str = "OBSERVER NAMES",
-                   telescope: str = "WISE 0.4-m, NEOWISE single exposures") -> Path:
-    """ADES PSV file: header blocks, then a fixed-width ``|``-separated
-    table (only columns with any value)."""
+                   submitter: str = "SUBMITTER NAME", observers=("OBSERVER NAMES",),
+                   measurers=("NEOfind (automated)",), institution: str = "", telescope: Optional[dict] = None,
+                   software: Optional[dict] = None, comments=()) -> Path:
+    """ADES PSV file: the obsContext header blocks, then a fixed-width
+    ``|``-separated table (only columns with any value). ``observers`` and
+    ``measurers`` are lists of names, one ``! name`` line each, as ADES
+    wants; ``telescope`` needs aperture, design and detector (default: WISE)."""
+    names = lambda v: [v] if isinstance(v, str) else [n for n in v if n]
     cols = [c for c in ADES_FIELDS if any(r.get(c) for r in rows)] or ADES_FIELDS[:3]
     width = {c: max([len(c)] + [len(str(r.get(c, ""))) for r in rows]) for c in cols}
-    lines = ["# version=2017",
-             "# observatory", f"! mpcCode {observatory}",
-             "# submitter", f"! name {submitter}",
-             "# observers", f"! name {observers}",
-             "# measurers", "! name NEOfind (automated)",
-             "# telescope", f"! design {telescope}",
-             "|".join(c.ljust(width[c]) for c in cols)]
+    lines = ["# version=2017", "# observatory", f"! mpcCode {observatory}",
+             "# submitter", f"! name {submitter}"] + ([f"! institution {institution}"] if institution else [])
+    if names(observers):
+        lines += ["# observers"] + [f"! name {n}" for n in names(observers)]
+    lines += ["# measurers"] + [f"! name {n}" for n in names(measurers)]
+    lines += ["# telescope"] + [f"! {k} {v}" for k, v in (telescope or WISE_TELESCOPE).items() if v]
+    if software:
+        lines += ["# software"] + [f"! {k} {v}" for k, v in software.items() if v]
+    if comments:
+        lines += ["# comment"] + [f"! line {c}" for c in comments]
+    lines.append("|".join(c.ljust(width[c]) for c in cols))
     for r in rows:
         lines.append("|".join(str(r.get(c, "")).ljust(width[c]) for c in cols))
     path = Path(path)
     path.write_text("\n".join(lines) + "\n")
     return path
+
+
+def check_ades(rows: List[dict], submitter: str, measurers) -> List[str]:
+    """Problems the MPC's validator would reject (the required fields and
+    their formats), as messages; empty when none."""
+    import re
+    probs = []
+    if not submitter or submitter == "SUBMITTER NAME":
+        probs.append("no submitter name")
+    if not [n for n in ([measurers] if isinstance(measurers, str) else measurers) if n]:
+        probs.append("no measurer names")
+    for k, r in enumerate(rows):
+        if not (r.get("permID") or r.get("provID") or r.get("trkSub")):
+            probs.append(f"row {k + 1}: no permID, provID or trkSub")
+        if r.get("trkSub") and not re.fullmatch(r"[-A-Za-z0-9_]{1,8}", r["trkSub"]):
+            probs.append(f"row {k + 1}: trkSub {r['trkSub']!r} is not 1-8 letters, digits, - or _")
+        for f in ("mode", "stn", "obsTime", "ra", "dec", "astCat"):
+            if not r.get(f):
+                probs.append(f"row {k + 1}: no {f}")
+        if any(r.get(f) for f in ("sys", "ctr", "pos1", "pos2", "pos3")) and not all(
+                r.get(f) for f in ("sys", "ctr", "pos1", "pos2", "pos3")):
+            probs.append(f"row {k + 1}: incomplete spacecraft position")
+    return probs
 
 
 def write_cutout_gifs(result, doc: dict, out_dir, half: int = 15, zoom: int = 6,

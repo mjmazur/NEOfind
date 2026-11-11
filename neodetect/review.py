@@ -16,7 +16,7 @@ Every detection that passes its threshold gets a ``status``:
 ``neodetect review`` writes a cutout sheet per suspect (each frame around
 the track, and the same with the other frames' median subtracted, which
 removes the stars and leaves the mover) and records the user's verdict
-(confirmed or rejected, with a note) in ``review.json`` beside
+(confirmed, likely or rejected, with a note) in ``review.json`` beside
 ``detections.json``. Verdicts are matched to detections by position, not
 index, so they carry over when the visit is searched again. Confirmed
 suspects can be written as ADES for the MPC, as tracklets without a
@@ -40,6 +40,7 @@ NEAR_KNOWN_RATE_FRAC = 0.3
 REVIEW_NAME = "review.json"
 SHEET_DIR = "review"
 REVIEWABLE = ("suspect", "near-known", "unchecked")
+VERDICTS = ("confirmed", "likely", "rejected")
 
 
 def _seps_arcsec(det: dict, asteroid: dict) -> List[float]:
@@ -139,9 +140,9 @@ def attach_verdicts(doc: dict, verdicts: List[dict]) -> None:
 
 
 def set_verdict(verdicts: List[dict], doc: dict, i: int, verdict: str, note: str = "") -> dict:
-    """Record ``verdict`` ("confirmed" or "rejected") for detection ``i``,
+    """Record ``verdict`` (one of ``VERDICTS``) for detection ``i``,
     replacing any earlier verdict on the same object."""
-    if verdict not in ("confirmed", "rejected"):
+    if verdict not in VERDICTS:
         raise ValueError(verdict)
     d = doc["detections"][i]
     tol = MATCH_TOL_PX * doc["stats"]["pixel_scale_arcsec"]
@@ -273,7 +274,7 @@ def stamps(frames, d: dict, half: int = 12, scale_arcsec: float = None):
 
 
 def write_sheet(frames, doc: dict, i: int, path, half: int = 12, zoom: int = 4,
-                max_cols: int = 9, info: Optional[dict] = None) -> Path:
+                max_cols: int = 9, info: Optional[dict] = None, blind: bool = False) -> Path:
     """PNG contact sheet for detection ``i``: per frame, the image (upper)
     and the difference (lower) around the track, north up, marked at its
     position; frames the score didn't use have an orange border, masked
@@ -281,7 +282,9 @@ def write_sheet(frames, doc: dict, i: int, path, half: int = 12, zoom: int = 4,
     the used frames along the track: the stamps are centred on the track,
     so their mean is a shift-and-stack, and a mover too faint to see in
     any one frame (z ~ 2-4 each) shows there. ``info`` (``sheet_info``) is
-    written under it: name, discovery date and site, V magnitude."""
+    written under it: name, discovery date and site, V magnitude. ``blind``
+    leaves out everything from the catalogue (status, name, ``info``), for
+    a review that doesn't know which detections are catalogued objects."""
     import warnings
     from PIL import Image, ImageDraw
 
@@ -304,7 +307,7 @@ def write_sheet(frames, doc: dict, i: int, path, half: int = 12, zoom: int = 4,
     ncol = min(max(n_panels, 1), max_cols)
     nrow = max(1, math.ceil(n_panels / max_cols))
     lines = []
-    if info:
+    if info and not blind:
         lines = [info.get("name") or ""]
         if info.get("discovered"):
             lines.append(f"disc. {info['discovered']}")
@@ -318,8 +321,10 @@ def write_sheet(frames, doc: dict, i: int, path, half: int = 12, zoom: int = 4,
     dr = ImageDraw.Draw(canvas)
     mag = f"mag {d['mag']:.2f}" if d.get("mag") is not None else ""
     nk = d.get("near_known")
-    tag = d.get("status", "")
-    if nk:
+    tag = "" if blind else d.get("status", "")
+    if blind:
+        pass
+    elif nk:
         tag += f" ({nk['name']} {nk['sep_arcsec']:.0f}\")"
     elif d.get("known"):
         tag += f" ({d['known']})"

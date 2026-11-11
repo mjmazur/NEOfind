@@ -1,0 +1,31 @@
+# systemd user service: keeps `neowise campaign run` going, restarting it
+# after a crash and starting it at boot. It resumes from campaign.sqlite.
+# --automate-now starts at once and then follows the night controller's
+# SLAVEMSGs; the campaign also steps aside whenever another process holds
+# the GPU (>= 300 MiB), so a boot during a detection run is safe.
+#
+#   cp scripts/neofind-campaign.service scripts/neofind-reviewer.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now neofind-campaign neofind-reviewer
+#   loginctl enable-linger $USER      # run at boot without logging in
+#
+# `neowise campaign stop` exits cleanly, so the service stays stopped;
+# use `systemctl --user start neofind-campaign` to start it again.
+[Unit]
+Description=NEOfind W3+W4 asteroid campaign
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/source/NEOfind
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/source/NEOfind/.venv/bin/python -m neowise campaign run %h/neofind/campaign_w3w4 --lat-max 10 --wide-share 0.25 --automate-now
+StandardOutput=append:%h/neofind/campaign_w3w4.out
+StandardError=inherit
+Restart=on-failure
+RestartSec=60
+KillMode=control-group
+TimeoutStopSec=60
+
+[Install]
+WantedBy=default.target

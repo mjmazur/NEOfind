@@ -1,0 +1,17 @@
+# systemd user service for the campaign's review page (http://127.0.0.1:8765).
+# Installed together with neofind-campaign.service; see that file.
+[Unit]
+Description=NEOfind campaign review page
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/source/NEOfind
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/source/NEOfind/.venv/bin/python -m neowise reviewer %h/neofind/campaign_w3w4
+StandardOutput=append:%h/neofind/reviewer.out
+StandardError=inherit
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

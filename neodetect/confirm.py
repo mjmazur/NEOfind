@@ -26,7 +26,8 @@ def companion_dir(source, band: str) -> Optional[Path]:
     if not source:
         return None
     parts = list(Path(source).parts)
-    for i, p in enumerate(parts):
+    for i in reversed(range(len(parts))):  # the visit's own band tag, not a parent's
+        p = parts[i]
         if "_w3" in p:
             parts[i] = p.replace("_w3", f"_w{band}")
             d = Path(*parts)

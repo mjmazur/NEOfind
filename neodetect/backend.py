@@ -18,8 +18,10 @@ reference on a small random problem (run once per process), else numba,
 else numpy.
 """
 
+import fcntl
 import math
 import os
+import time
 
 import numpy as np
 
@@ -171,11 +173,60 @@ except Exception:  # ImportError, or CUDA without a device/driver
 _cupy_kernel = None
 _cupy_ok = None
 
+# Share of the GPU this process may use (``NEOFIND_GPU_LIMIT``, 0-1, default
+# 1): the kernel idles after each launch so that it runs at most that
+# fraction of the time, and CuPy's memory pool is capped at that fraction of
+# the device's memory. nvidia-smi reads ~3 points above the duty cycle (the
+# launch and copy overheads), hence GPU_LIMIT_MARGIN: a limit of 0.8 reads
+# 80% or less.
+#
+# The limit is per process. Processes sharing one limit (the campaign's
+# parallel searches) name a common lock file in ``NEOFIND_GPU_LOCK``: each
+# launch and the idle after it are taken under that lock, so the processes
+# take turns and together use the GPU at most the limit's share of the time.
+GPU_LIMIT_ENV = "NEOFIND_GPU_LIMIT"
+GPU_LOCK_ENV = "NEOFIND_GPU_LOCK"
+GPU_LIMIT_MARGIN = 0.95
+
+
+class _GpuTurn:  # pragma: no cover - GPU only
+    """Exclusive turn on the GPU among processes sharing ``NEOFIND_GPU_LOCK``."""
+
+    def __init__(self):
+        path = os.environ.get(GPU_LOCK_ENV)
+        self.fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644) if path else None
+
+    def __enter__(self):
+        if self.fd is not None:
+            fcntl.flock(self.fd, fcntl.LOCK_EX)
+
+    def __exit__(self, *exc):
+        if self.fd is not None:
+            fcntl.flock(self.fd, fcntl.LOCK_UN)
+
+    def close(self):
+        if self.fd is not None:
+            os.close(self.fd)
+
+
+def gpu_limit() -> float:
+    try:
+        return min(1.0, max(0.05, float(os.environ.get(GPU_LIMIT_ENV, "1"))))
+    except ValueError:
+        return 1.0
+
+
+def _apply_gpu_memory_limit(cp, limit: float) -> None:  # pragma: no cover - GPU only
+    if limit < 1.0:
+        cp.get_default_memory_pool().set_limit(fraction=limit)
+
 
 def _stack_max_cupy(psi_c, phi, valid, dx, dy, min_frames):  # pragma: no cover - GPU only
     global _cupy_kernel
     cp = _cp
+    limit = gpu_limit()
     if _cupy_kernel is None:
+        _apply_gpu_memory_limit(cp, limit)
         _cupy_kernel = cp.RawKernel(_CUDA_SRC, "stack_max")
     n, h, w = psi_c.shape
     psi_g = cp.asarray(np.ascontiguousarray(psi_c, np.float32))
@@ -184,11 +235,18 @@ def _stack_max_cupy(psi_c, phi, valid, dx, dy, min_frames):  # pragma: no cover 
     bestv = cp.full((h, w), -1, cp.int32)
     block = (32, 8, 1)
     grid = ((w + block[0] - 1) // block[0], (h + block[1] - 1) // block[1], 1)
+    turn = _GpuTurn()
     for v0 in range(0, dx.shape[0], CUPY_CHUNK):
         ddx = cp.asarray(np.ascontiguousarray(dx[v0:v0 + CUPY_CHUNK], np.int32))
         ddy = cp.asarray(np.ascontiguousarray(dy[v0:v0 + CUPY_CHUNK], np.int32))
-        _cupy_kernel(grid, block, (psi_g, phi_g, ddx, ddy, np.int32(n), np.int32(h), np.int32(w),
-                                   np.int32(v0), np.int32(ddx.shape[0]), best2, bestv))
+        with turn:
+            t0 = time.perf_counter()
+            _cupy_kernel(grid, block, (psi_g, phi_g, ddx, ddy, np.int32(n), np.int32(h), np.int32(w),
+                                       np.int32(v0), np.int32(ddx.shape[0]), best2, bestv))
+            if limit < 1.0:
+                cp.cuda.get_current_stream().synchronize()
+                time.sleep((time.perf_counter() - t0) * (1.0 / (limit * GPU_LIMIT_MARGIN) - 1.0))
+    turn.close()
     best_v = cp.asnumpy(bestv)
     best_s = np.where(best_v >= 0, np.sqrt(cp.asnumpy(best2)), -np.inf).astype(np.float32)
     return best_s, best_v
