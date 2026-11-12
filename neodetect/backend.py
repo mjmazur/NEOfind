@@ -11,7 +11,8 @@ and ``phi`` are zero wherever ``valid`` is zero, so the sums need no
 branches (which lets the compiler vectorize the inner loop).
 
 Backends: ``cupy`` (NVIDIA GPU: a CUDA kernel, one thread per grid pixel
-looping over a chunk of velocities and all frames), ``numba`` (parallel
+looping over a chunk of velocities and all frames, skipping pixels outside
+each frame's footprint), ``numba`` (parallel
 CPU) and ``numpy`` (slow reference). ``auto`` picks cupy when CuPy and a
 GPU are present and its kernel passes a self-test against the numpy
 reference on a small random problem (run once per process), else numba,
@@ -130,26 +131,41 @@ if HAVE_NUMBA:
 
 
 _CUDA_SRC = r"""
+// One thread per grid pixel, looping over a chunk of velocities and all frames.
+// psi and phi are interleaved (one 8-byte load per frame); the chunk's offsets
+// (dx, dy) are copied into shared memory once per block; span[k, y] = the
+// [first, end) columns frame k covers on row y, so pixels outside a frame's
+// footprint (where psi = phi = 0) are skipped without loading them.
 extern "C" __global__
-void stack_max(const float* psi, const float* phi, const int* dx, const int* dy,
+void stack_max(const float2* __restrict__ pp, const short2* __restrict__ off,
+               const short2* __restrict__ span,
                const int n, const int h, const int w, const int v0, const int nv,
                float* best2, int* bestv)
 {
+    extern __shared__ short2 s_off[];
+    const int tid = threadIdx.y * blockDim.x + threadIdx.x;
+    for (int i = tid; i < nv * n; i += blockDim.x * blockDim.y) s_off[i] = off[i];
+    __syncthreads();
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= w || y >= h) return;
     const long idx = (long)y * w + x;
     float b2 = best2[idx];
     int bv = bestv[idx];
+    const long hw = (long)h * w;
     for (int v = 0; v < nv; v++) {
         float a = 0.0f, d = 0.0f;
+        const short2* o = s_off + v * n;
         for (int k = 0; k < n; k++) {
-            const int xx = x + dx[v * n + k];
-            const int yy = y + dy[v * n + k];
-            if (xx < 0 || xx >= w || yy < 0 || yy >= h) continue;
-            const long j = ((long)k * h + yy) * w + xx;
-            a += psi[j];
-            d += phi[j];
+            const short2 s = o[k];
+            const int yy = y + s.y;
+            if ((unsigned)yy >= (unsigned)h) continue;
+            const short2 sp = __ldg(span + k * h + yy);
+            const int xx = x + s.x;
+            if (xx < sp.x || xx >= sp.y) continue;
+            const float2 q = __ldg(pp + k * hw + (long)yy * w + xx);
+            a += q.x;
+            d += q.y;
         }
         // S > best  <=>  a^2 > best^2 * d for positive S (as the numba kernel).
         if (a > 0.0f && a * a > b2 * d) {
@@ -161,7 +177,10 @@ void stack_max(const float* psi, const float* phi, const int* dx, const int* dy,
     bestv[idx] = bv;
 }
 """
-CUPY_CHUNK = 1024  # velocities per kernel launch (keeps each launch short)
+# Velocities per kernel launch: keeps each launch short, and the chunk's
+# offsets (n frames x 4 bytes each) within the 48 KB of shared memory a block
+# gets by default (512 x 16 frames = 32 KB).
+CUPY_CHUNK = 512
 
 try:  # pragma: no cover - needs an NVIDIA GPU
     import cupy as _cp
@@ -229,20 +248,27 @@ def _stack_max_cupy(psi_c, phi, valid, dx, dy, min_frames):  # pragma: no cover 
         _apply_gpu_memory_limit(cp, limit)
         _cupy_kernel = cp.RawKernel(_CUDA_SRC, "stack_max")
     n, h, w = psi_c.shape
-    psi_g = cp.asarray(np.ascontiguousarray(psi_c, np.float32))
-    phi_g = cp.asarray(np.ascontiguousarray(phi, np.float32))
+    if max(h, w) > 32767 or max(int(np.abs(dx).max(initial=0)), int(np.abs(dy).max(initial=0))) > 32767:
+        raise ValueError("cupy backend: grid or offsets exceed the kernel's 16-bit range")
+    pp_g = cp.asarray(np.ascontiguousarray(np.stack([psi_c, phi], axis=-1), np.float32))
+    covered = valid > 0
+    has = covered.any(axis=2)
+    first = np.where(has, covered.argmax(axis=2), w)
+    end = np.where(has, w - covered[:, :, ::-1].argmax(axis=2), 0)
+    span_g = cp.asarray(np.ascontiguousarray(np.stack([first, end], axis=-1), np.int16))
+    off = np.ascontiguousarray(np.stack([dx, dy], axis=-1), np.int16)
     best2 = cp.zeros((h, w), cp.float32)
     bestv = cp.full((h, w), -1, cp.int32)
-    block = (32, 8, 1)
+    block = (32, 8, 1)  # fastest of the shapes tried on an RTX 3060
     grid = ((w + block[0] - 1) // block[0], (h + block[1] - 1) // block[1], 1)
     turn = _GpuTurn()
     for v0 in range(0, dx.shape[0], CUPY_CHUNK):
-        ddx = cp.asarray(np.ascontiguousarray(dx[v0:v0 + CUPY_CHUNK], np.int32))
-        ddy = cp.asarray(np.ascontiguousarray(dy[v0:v0 + CUPY_CHUNK], np.int32))
+        off_g = cp.asarray(off[v0:v0 + CUPY_CHUNK])
+        nv = off_g.shape[0]
         with turn:
             t0 = time.perf_counter()
-            _cupy_kernel(grid, block, (psi_g, phi_g, ddx, ddy, np.int32(n), np.int32(h), np.int32(w),
-                                       np.int32(v0), np.int32(ddx.shape[0]), best2, bestv))
+            _cupy_kernel(grid, block, (pp_g, off_g, span_g, np.int32(n), np.int32(h), np.int32(w),
+                                       np.int32(v0), np.int32(nv), best2, bestv), shared_mem=nv * n * 4)
             if limit < 1.0:
                 cp.cuda.get_current_stream().synchronize()
                 time.sleep((time.perf_counter() - t0) * (1.0 / (limit * GPU_LIMIT_MARGIN) - 1.0))
