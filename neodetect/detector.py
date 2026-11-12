@@ -19,6 +19,7 @@ from .register import Registered, _static_sky, register
 from .shiftstack import shift_and_stack
 from .sources import find_sources
 from .photometry import aperture_correction
+from .parallel import parallel_map
 from .trackfit import Track, TrackEvaluator, TrackScore, robust_combine
 
 
@@ -575,19 +576,14 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
     timing["triage_s"] = time.time() - t
 
     t = time.time()
-    refined: List[TrackScore] = []
-    n_inconsistent = 0
-    n_star_noise = 0
-    n_single_frame = 0
     ref_err = _blank_sky_flux_err(pre)
-    n_static = 0
-    n_kept_curved = 0
-    kept_curved = set()
-    n_extended = 0
     if not cfg.static_source_frac:
         static_z = None
-    for tr in chosen:
+
+    def refine_seed(tr):
+        """(refined track or None, why it was dropped or None, kept as strong curved)."""
         r = evaluator.refine(tr, accel_max=_accel_bound_px(cfg, tr.speed, scale))
+        kept = False
         if r is not None and r.n_used < cfg.accel_min_frames and (r.track.ax or r.track.ay):
             # Refit straight with frames re-selected, and on the curved fit's
             # frames only: a straight line through a curved path's frames can
@@ -606,30 +602,41 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
                     and (r is None or r.consistency_p(cfg.frac_tol) < cfg.min_consistency_p)
                     and _strong_curved(curved, cfg, scale)):
                 r = curved
-                n_kept_curved += 1
-                kept_curved.add(id(r))
+                kept = True
         if r is None or r.score < cfg.report_threshold:
-            continue
+            return None, None, kept
         if _path_extent(r.track, times) < min_path or r.n_used < cfg.min_frames:
-            continue
+            return None, None, kept
         if r.consistency_p(cfg.frac_tol) < cfg.min_consistency_p:
-            n_inconsistent += 1
-            continue
+            return None, "inconsistent", kept
         if cfg.star_noise_factor and _on_star_residuals(r, ref_err, cfg):
-            n_star_noise += 1
-            continue
+            return None, "star_noise", kept
         if cfg.single_frame_max_frac and _single_frame_dominated(r, cfg):
-            n_single_frame += 1
-            continue
+            return None, "single_frame", kept
         if static_z is not None and _on_static_sources(r, static_z, times, cfg):
-            n_static += 1
-            continue
+            return None, "static", kept
         if cfg.extended_max:
             ext = _extendedness(r, pre, times, cfg.extended_k)
             if ext is not None and ext > cfg.extended_max:
-                n_extended += 1
-                continue
-        refined.append(r)
+                return None, "extended", kept
+        return r, None, kept
+
+    # Each seed is refined independently: spread them over the cores (the
+    # results, in order, are the same as one after another).
+    refined: List[TrackScore] = []
+    kept_curved = set()
+    why = {"inconsistent": 0, "star_noise": 0, "single_frame": 0, "static": 0, "extended": 0}
+    n_kept_curved = 0
+    for r, reason, kept in parallel_map(refine_seed, chosen, cfg.threads):
+        n_kept_curved += kept
+        if reason is not None:
+            why[reason] += 1
+        if r is not None:
+            refined.append(r)
+            if kept:
+                kept_curved.add(id(r))
+    n_inconsistent, n_star_noise, n_single_frame = why["inconsistent"], why["star_noise"], why["single_frame"]
+    n_static, n_extended = why["static"], why["extended"]
     # Curved short tracks kept by keep_strong_curved come last, so they
     # can't take frames from a regular track (on real_v3 v001 one, made of
     # an injected asteroid's frame and two unrelated peaks, took that
@@ -644,9 +651,9 @@ def detect(seq: Sequence, cfg: DetectorConfig = None, log=None) -> DetectionResu
         if r is not None and r.score >= cfg.report_threshold:
             final.append(r)
     # Final paths from fully covered frames only (``refit_geometry``).
-    final = [evaluator.refit_geometry(r, accel_max=_accel_bound_px(cfg, r.track.speed, scale)
-                                      if r.n_used >= cfg.accel_min_frames else 0.0)
-             for r in final]
+    final = parallel_map(lambda r: evaluator.refit_geometry(
+        r, accel_max=_accel_bound_px(cfg, r.track.speed, scale) if r.n_used >= cfg.accel_min_frames else 0.0),
+        final, cfg.threads)
     final = [r for r in final if r.score >= cfg.report_threshold]
     final.sort(key=lambda r: -r.score)
     timing["refine_s"] = time.time() - t
